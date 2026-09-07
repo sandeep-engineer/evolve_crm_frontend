@@ -50,7 +50,7 @@ export default function Home() {
               Access your account
             </h2>
             <p className="mt-[var(--space-2)] text-sm leading-[var(--leading-normal)] text-[var(--color-text-secondary)]">
-              Login if you already have an account, or register the first admin account for a new setup.
+              Sign in with the account created for your organization.
             </p>
           </div>
           <AuthForm />
