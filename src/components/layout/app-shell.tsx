@@ -10,6 +10,7 @@ import {
   Check,
   ChevronDown,
   CircleAlert,
+  Building2,
   FileText,
   Grid2X2,
   Home,
@@ -51,10 +52,12 @@ type NavigationItem = {
   href: string;
   icon: LucideIcon;
   countKey?: "inbox" | "leads" | "members" | "staff";
+  roles?: Array<AuthUser["role"]>;
 };
 
 const navigation: NavigationItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: Home },
+  { label: "Organizations", href: "/organizations", icon: Building2, roles: ["CRM_OWNER"] },
   { label: "Inbox", href: "/inbox", icon: Inbox, countKey: "inbox" },
   { label: "Members", href: "/members", icon: UsersRound, countKey: "members" },
   { label: "Leads", href: "/leads", icon: UserRound, countKey: "leads" },
@@ -277,7 +280,9 @@ export function AppShell({ children, user }: AppShellProps) {
       </div>
 
       <nav className="flex-1 space-y-1 px-[var(--space-3)] py-[var(--space-4)]">
-        {navigation.map((item) => {
+        {navigation
+          .filter((item) => !item.roles || (shellUser ? item.roles.includes(shellUser.role) : false))
+          .map((item) => {
           const Icon = item.icon;
           const count = item.countKey ? counts[item.countKey] : undefined;
           const isActive =
@@ -302,7 +307,7 @@ export function AppShell({ children, user }: AppShellProps) {
               ) : null}
             </Link>
           );
-        })}
+          })}
       </nav>
 
       <div className="m-[var(--space-3)] rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-subtle)] p-[var(--space-3)]">
