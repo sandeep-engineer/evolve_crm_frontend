@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
 import { FilterSelect } from "@/components/ui/filter-select";
 import { Input } from "@/components/ui/input";
+import { BranchAdminManagement } from "@/components/branches/branch-admin-management";
 import { AuthApiError, getCurrentUser, type AuthUser } from "@/lib/api/auth";
 import {
   BranchApiError,
@@ -84,6 +85,7 @@ export function BranchManagement() {
   const [phone, setPhone] = useState("");
   const [formError, setFormError] = useState("");
   const [branchToChange, setBranchToChange] = useState<Branch | null>(null);
+  const [adminBranch, setAdminBranch] = useState<Branch | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   const selectedOrganization = useMemo(
@@ -205,6 +207,7 @@ export function BranchManagement() {
     setSelectedOrganizationId(organizationId);
     setBranches([]);
     setDetail(null);
+    setAdminBranch(null);
     setPage(1);
     setTotal(0);
     setTotalPages(0);
@@ -332,6 +335,10 @@ export function BranchManagement() {
   const isCrmOwner = user?.role === "CRM_OWNER";
   const isBranchLevel = user?.role === "BRANCH_ADMIN" || user?.role === "RECEPTIONIST" || user?.role === "LEAD_CALLER";
 
+  if (adminBranch && user && token && isManager) {
+    return <BranchAdminManagement branch={adminBranch} onClose={() => setAdminBranch(null)} organizationName={selectedOrganization?.name || `Organization #${adminBranch.organizationId}`} token={token} user={user} />;
+  }
+
   return (
     <div className="grid gap-[var(--section-gap)]">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -401,7 +408,7 @@ export function BranchManagement() {
             </div>
 
             {error ? <ErrorState error={error} onRetry={() => void loadBranches()} /> : isLoading ? <div className="grid min-h-64 place-items-center text-sm text-[var(--color-text-secondary)]">Loading Branches...</div> : branches.length === 0 ? <EmptyState canCreate={isManager} onCreate={startCreate} /> : (
-              <div className="overflow-x-auto"><table className="min-w-[900px] w-full text-left text-sm"><thead className="border-b border-[var(--color-divider)] bg-[var(--color-surface-subtle)] text-xs font-semibold uppercase text-[var(--color-text-muted)]"><tr><th className="px-5 py-3">Branch</th><th className="px-5 py-3">Address</th><th className="px-5 py-3">Phone</th>{isCrmOwner ? <th className="px-5 py-3">Organization</th> : null}<th className="px-5 py-3">Status</th><th className="px-5 py-3">Updated</th><th className="px-5 py-3 text-right">Actions</th></tr></thead><tbody className="divide-y divide-[var(--color-divider)]">{branches.map((branch) => <BranchRow branch={branch} canEdit={canEditBranch(user, branch)} canManage={isManager} organizationName={isCrmOwner ? selectedOrganization?.name || "Not available" : undefined} onChangeStatus={setBranchToChange} onEdit={startEdit} onView={openDetails} key={branch.id} />)}</tbody></table></div>
+              <div className="overflow-x-auto"><table className="min-w-[900px] w-full text-left text-sm"><thead className="border-b border-[var(--color-divider)] bg-[var(--color-surface-subtle)] text-xs font-semibold uppercase text-[var(--color-text-muted)]"><tr><th className="px-5 py-3">Branch</th><th className="px-5 py-3">Address</th><th className="px-5 py-3">Phone</th>{isCrmOwner ? <th className="px-5 py-3">Organization</th> : null}<th className="px-5 py-3">Status</th><th className="px-5 py-3">Updated</th><th className="px-5 py-3 text-right">Actions</th></tr></thead><tbody className="divide-y divide-[var(--color-divider)]">{branches.map((branch) => <BranchRow branch={branch} canEdit={canEditBranch(user, branch)} canManage={isManager} organizationName={isCrmOwner ? selectedOrganization?.name || "Not available" : undefined} onChangeStatus={setBranchToChange} onEdit={startEdit} onManageAdmins={setAdminBranch} onView={openDetails} key={branch.id} />)}</tbody></table></div>
             )}
 
             {!error && !isLoading && totalPages > 1 ? <div className="flex items-center justify-between gap-3 border-t border-[var(--color-divider)] px-[var(--space-5)] py-[var(--space-4)]"><p className="text-sm text-[var(--color-text-secondary)]">Page {page} of {totalPages}</p><div className="flex gap-2"><Button aria-label="Previous Branch page" disabled={page === 1} onClick={() => setPage((current) => current - 1)} variant="secondary"><ChevronLeft className="size-[var(--icon-sm)]" /></Button><Button aria-label="Next Branch page" disabled={page >= totalPages} onClick={() => setPage((current) => current + 1)} variant="secondary"><ChevronRight className="size-[var(--icon-sm)]" /></Button></div></div> : null}
@@ -421,7 +428,7 @@ export function BranchManagement() {
       </Dialog>
 
       <Dialog className="max-w-lg" description="Sanitized Branch information and audit details." isOpen={Boolean(detail)} onClose={() => setDetail(null)} title="Branch details">
-        {detail ? <BranchDetails branch={detail} canEdit={canEditBranch(user, detail)} canManage={isManager} isLoading={isDetailLoading} organizationName={isCrmOwner ? selectedOrganization?.name || "Not available" : undefined} onChangeStatus={setBranchToChange} onEdit={startEdit} /> : null}
+        {detail ? <BranchDetails branch={detail} canEdit={canEditBranch(user, detail)} canManage={isManager} isLoading={isDetailLoading} organizationName={isCrmOwner ? selectedOrganization?.name || "Not available" : undefined} onChangeStatus={setBranchToChange} onEdit={startEdit} onManageAdmins={setAdminBranch} /> : null}
       </Dialog>
 
       <Dialog className="max-w-md" description="Confirm the Branch availability change." isOpen={Boolean(branchToChange)} onClose={() => { if (!isSaving) setBranchToChange(null); }} title={branchToChange?.status === "ACTIVE" ? "Deactivate Branch" : "Reactivate Branch"}>
@@ -431,12 +438,12 @@ export function BranchManagement() {
   );
 }
 
-function BranchRow({ branch, canEdit, canManage, organizationName, onChangeStatus, onEdit, onView }: { branch: Branch; canEdit: boolean; canManage: boolean; organizationName?: string; onChangeStatus: (branch: Branch) => void; onEdit: (branch: Branch) => void; onView: (branch: Branch) => void }) {
-  return <tr className="hover:bg-[var(--color-surface-hover)]"><td className="px-5 py-4"><button className="flex items-center gap-3 text-left" onClick={() => void onView(branch)} type="button"><span className="grid size-9 place-items-center rounded-full bg-[var(--blue-100)] text-[var(--color-primary)]"><MapPin className="size-[var(--icon-sm)]" /></span><span className="font-semibold text-[var(--color-text)] hover:text-[var(--color-primary)]">{branch.name}</span></button></td><td className="px-5 py-4 text-[var(--color-text-secondary)]">{branch.address}</td><td className="px-5 py-4 text-[var(--color-text-secondary)]">{branch.phone || "Not provided"}</td>{organizationName ? <td className="px-5 py-4 text-[var(--color-text-secondary)]">{organizationName}</td> : null}<td className="px-5 py-4"><BranchStatusPill status={branch.status} /></td><td className="px-5 py-4 text-[var(--color-text-secondary)]">{formatDate(branch.updatedAt)}</td><td className="px-5 py-4"><div className="flex justify-end gap-2"><Button aria-label={`View ${branch.name}`} onClick={() => void onView(branch)} variant="ghost"><Eye className="size-[var(--icon-sm)]" /></Button>{canEdit ? <Button aria-label={`Edit ${branch.name}`} className="gap-1" onClick={() => onEdit(branch)} variant="secondary"><Pencil className="size-3.5" />Edit</Button> : null}{canManage ? <Button aria-label={`${branch.status === "ACTIVE" ? "Deactivate" : "Reactivate"} ${branch.name}`} className="gap-1" onClick={() => onChangeStatus(branch)} variant="secondary">{branch.status === "ACTIVE" ? <ToggleLeft className="size-3.5" /> : <ToggleRight className="size-3.5" />}{branch.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button> : null}</div></td></tr>;
+function BranchRow({ branch, canEdit, canManage, organizationName, onChangeStatus, onEdit, onManageAdmins, onView }: { branch: Branch; canEdit: boolean; canManage: boolean; organizationName?: string; onChangeStatus: (branch: Branch) => void; onEdit: (branch: Branch) => void; onManageAdmins: (branch: Branch) => void; onView: (branch: Branch) => void }) {
+  return <tr className="hover:bg-[var(--color-surface-hover)]"><td className="px-5 py-4"><button className="flex items-center gap-3 text-left" onClick={() => void onView(branch)} type="button"><span className="grid size-9 place-items-center rounded-full bg-[var(--blue-100)] text-[var(--color-primary)]"><MapPin className="size-[var(--icon-sm)]" /></span><span className="font-semibold text-[var(--color-text)] hover:text-[var(--color-primary)]">{branch.name}</span></button></td><td className="px-5 py-4 text-[var(--color-text-secondary)]">{branch.address}</td><td className="px-5 py-4 text-[var(--color-text-secondary)]">{branch.phone || "Not provided"}</td>{organizationName ? <td className="px-5 py-4 text-[var(--color-text-secondary)]">{organizationName}</td> : null}<td className="px-5 py-4"><BranchStatusPill status={branch.status} /></td><td className="px-5 py-4 text-[var(--color-text-secondary)]">{formatDate(branch.updatedAt)}</td><td className="px-5 py-4"><div className="flex justify-end gap-2"><Button aria-label={`View ${branch.name}`} onClick={() => void onView(branch)} variant="ghost"><Eye className="size-[var(--icon-sm)]" /></Button>{canManage ? <Button className="gap-1" onClick={() => onManageAdmins(branch)} variant="secondary">Manage Admins</Button> : null}{canEdit ? <Button aria-label={`Edit ${branch.name}`} className="gap-1" onClick={() => onEdit(branch)} variant="secondary"><Pencil className="size-3.5" />Edit</Button> : null}{canManage ? <Button aria-label={`${branch.status === "ACTIVE" ? "Deactivate" : "Reactivate"} ${branch.name}`} className="gap-1" onClick={() => onChangeStatus(branch)} variant="secondary">{branch.status === "ACTIVE" ? <ToggleLeft className="size-3.5" /> : <ToggleRight className="size-3.5" />}{branch.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button> : null}</div></td></tr>;
 }
 
-function BranchDetails({ branch, canEdit, canManage, isLoading, organizationName, onChangeStatus, onEdit }: { branch: Branch; canEdit: boolean; canManage: boolean; isLoading: boolean; organizationName?: string; onChangeStatus: (branch: Branch) => void; onEdit: (branch: Branch) => void }) {
-  return <div className="grid gap-4 text-sm"><div><p className="text-lg font-bold text-[var(--color-text)]">{branch.name}</p><div className="mt-2"><BranchStatusPill status={branch.status} /></div></div>{isLoading ? <p className="text-[var(--color-text-secondary)]">Refreshing details...</p> : null}<DetailRow label="Address" value={branch.address} /><DetailRow label="Phone" value={branch.phone || "Not provided"} />{organizationName ? <DetailRow label="Organization" value={organizationName} /> : null}<DetailRow label="Created by" value={actorSummary(branch.createdByUserId)} /><DetailRow label="Created" value={formatDate(branch.createdAt)} /><DetailRow label="Last updated" value={formatDate(branch.updatedAt)} />{branch.deactivatedAt ? <><DetailRow label="Deactivated by" value={actorSummary(branch.deactivatedByUserId)} /><DetailRow label="Deactivated" value={formatDate(branch.deactivatedAt)} /></> : null}<div className="mt-2 flex flex-wrap justify-end gap-3">{canEdit ? <Button onClick={() => onEdit(branch)} variant="secondary">Edit</Button> : null}{canManage ? <Button onClick={() => onChangeStatus(branch)} variant="secondary">{branch.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button> : null}</div></div>;
+function BranchDetails({ branch, canEdit, canManage, isLoading, organizationName, onChangeStatus, onEdit, onManageAdmins }: { branch: Branch; canEdit: boolean; canManage: boolean; isLoading: boolean; organizationName?: string; onChangeStatus: (branch: Branch) => void; onEdit: (branch: Branch) => void; onManageAdmins: (branch: Branch) => void }) {
+  return <div className="grid gap-4 text-sm"><div><p className="text-lg font-bold text-[var(--color-text)]">{branch.name}</p><div className="mt-2"><BranchStatusPill status={branch.status} /></div></div>{isLoading ? <p className="text-[var(--color-text-secondary)]">Refreshing details...</p> : null}<DetailRow label="Address" value={branch.address} /><DetailRow label="Phone" value={branch.phone || "Not provided"} />{organizationName ? <DetailRow label="Organization" value={organizationName} /> : null}<DetailRow label="Created by" value={actorSummary(branch.createdByUserId)} /><DetailRow label="Created" value={formatDate(branch.createdAt)} /><DetailRow label="Last updated" value={formatDate(branch.updatedAt)} />{branch.deactivatedAt ? <><DetailRow label="Deactivated by" value={actorSummary(branch.deactivatedByUserId)} /><DetailRow label="Deactivated" value={formatDate(branch.deactivatedAt)} /></> : null}<div className="mt-2 flex flex-wrap justify-end gap-3">{canManage ? <Button onClick={() => onManageAdmins(branch)} variant="secondary">Manage Admins</Button> : null}{canEdit ? <Button onClick={() => onEdit(branch)} variant="secondary">Edit</Button> : null}{canManage ? <Button onClick={() => onChangeStatus(branch)} variant="secondary">{branch.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button> : null}</div></div>;
 }
 
 function EmptyState({ canCreate, onCreate }: { canCreate: boolean; onCreate: () => void }) {
