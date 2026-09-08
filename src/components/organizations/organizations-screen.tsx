@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
 import { FilterSelect } from "@/components/ui/filter-select";
 import { Input } from "@/components/ui/input";
+import { OrganizationOwnersDialog } from "@/components/organizations/organization-owners-dialog";
 import { PageHeader } from "@/components/ui/page-header";
 import { AuthApiError, getCurrentUser, type AuthUser } from "@/lib/api/auth";
 import {
@@ -72,6 +73,7 @@ export function OrganizationsScreen() {
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [editing, setEditing] = useState<Organization | null>(null);
   const [organizationToChange, setOrganizationToChange] = useState<Organization | null>(null);
+  const [organizationForOwners, setOrganizationForOwners] = useState<Organization | null>(null);
 
   const handleApiError = useCallback(
     (apiError: unknown, fallback: string) => {
@@ -268,6 +270,16 @@ export function OrganizationsScreen() {
     setFormError("");
   }
 
+  function manageOwners(organization: Organization) {
+    setDetail(null);
+    setOrganizationForOwners(organization);
+  }
+
+  function handleOwnerSessionExpired() {
+    clearSession();
+    router.replace("/");
+  }
+
   if (!user) return null;
 
   return (
@@ -344,7 +356,7 @@ export function OrganizationsScreen() {
                       <td className="px-5 py-4 text-[var(--color-text-secondary)]">{creatorSummary(organization)}</td>
                       <td className="px-5 py-4 text-[var(--color-text-secondary)]">{formatDate(organization.createdAt)}</td>
                       <td className="px-5 py-4 text-[var(--color-text-secondary)]">{formatDate(organization.updatedAt)}</td>
-                      <td className="px-5 py-4"><div className="flex justify-end gap-2"><Button aria-label={`View ${organization.name}`} onClick={() => void openDetails(organization)} variant="ghost">View</Button><Button aria-label={`Edit ${organization.name}`} className="gap-1" onClick={() => startEdit(organization)} variant="secondary"><Pencil className="size-3.5" />Edit</Button><Button aria-label={`${organization.status === "ACTIVE" ? "Deactivate" : "Reactivate"} ${organization.name}`} className="gap-1" onClick={() => setOrganizationToChange(organization)} variant="secondary">{organization.status === "ACTIVE" ? <ToggleLeft className="size-3.5" /> : <ToggleRight className="size-3.5" />}{organization.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button></div></td>
+                      <td className="px-5 py-4"><div className="flex justify-end gap-2"><Button aria-label={`View ${organization.name}`} onClick={() => void openDetails(organization)} variant="ghost">View</Button><Button aria-label={`Manage Organization Owners for ${organization.name}`} onClick={() => manageOwners(organization)} variant="secondary">Owners</Button><Button aria-label={`Edit ${organization.name}`} className="gap-1" onClick={() => startEdit(organization)} variant="secondary"><Pencil className="size-3.5" />Edit</Button><Button aria-label={`${organization.status === "ACTIVE" ? "Deactivate" : "Reactivate"} ${organization.name}`} className="gap-1" onClick={() => setOrganizationToChange(organization)} variant="secondary">{organization.status === "ACTIVE" ? <ToggleLeft className="size-3.5" /> : <ToggleRight className="size-3.5" />}{organization.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button></div></td>
                     </tr>
                   ))}
                 </tbody>
@@ -370,8 +382,15 @@ export function OrganizationsScreen() {
       </Dialog>
 
       <Dialog className="max-w-lg" isOpen={Boolean(detail)} onClose={() => setDetail(null)} title="Organization details">
-        {detail ? <div className="grid gap-4 text-sm"><div><p className="text-lg font-bold text-[var(--color-text)]">{detail.name}</p><div className="mt-2"><StatusPill status={detail.status} /></div></div>{isDetailLoading ? <p className="text-[var(--color-text-secondary)]">Refreshing details...</p> : null}<DetailRow label="Created by" value={creatorSummary(detail)} /><DetailRow label="Created" value={formatDate(detail.createdAt)} /><DetailRow label="Last updated" value={formatDate(detail.updatedAt)} />{detail.deactivatedAt ? <><DetailRow label="Deactivated" value={formatDate(detail.deactivatedAt)} /><DetailRow label="Deactivated by" value={detail.deactivatedByUserId ? `User #${detail.deactivatedByUserId}` : "Not available"} /></> : null}<div className="mt-2 flex flex-wrap justify-end gap-3"><Button onClick={() => startEdit(detail)} variant="secondary">Edit</Button><Button onClick={() => { setDetail(null); setOrganizationToChange(detail); }} variant="secondary">{detail.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button></div></div> : null}
+        {detail ? <div className="grid gap-4 text-sm"><div><p className="text-lg font-bold text-[var(--color-text)]">{detail.name}</p><div className="mt-2"><StatusPill status={detail.status} /></div></div>{isDetailLoading ? <p className="text-[var(--color-text-secondary)]">Refreshing details...</p> : null}<DetailRow label="Created by" value={creatorSummary(detail)} /><DetailRow label="Created" value={formatDate(detail.createdAt)} /><DetailRow label="Last updated" value={formatDate(detail.updatedAt)} />{detail.deactivatedAt ? <><DetailRow label="Deactivated" value={formatDate(detail.deactivatedAt)} /><DetailRow label="Deactivated by" value={detail.deactivatedByUserId ? `User #${detail.deactivatedByUserId}` : "Not available"} /></> : null}<div className="mt-2 flex flex-wrap justify-end gap-3"><Button onClick={() => manageOwners(detail)} variant="secondary">Manage owners</Button><Button onClick={() => startEdit(detail)} variant="secondary">Edit</Button><Button onClick={() => { setDetail(null); setOrganizationToChange(detail); }} variant="secondary">{detail.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button></div></div> : null}
       </Dialog>
+
+      <OrganizationOwnersDialog
+        onClose={() => setOrganizationForOwners(null)}
+        onSessionExpired={handleOwnerSessionExpired}
+        organization={organizationForOwners}
+        token={token}
+      />
 
       <Dialog className="max-w-md" isOpen={Boolean(organizationToChange)} onClose={() => { if (!isSaving) setOrganizationToChange(null); }} title={organizationToChange?.status === "ACTIVE" ? "Deactivate Organization" : "Reactivate Organization"}>
         {organizationToChange ? <div className="grid gap-5"><p className="text-sm leading-6 text-[var(--color-text-secondary)]">{organizationToChange.status === "ACTIVE" ? <>Deactivate <strong className="text-[var(--color-text)]">{organizationToChange.name}</strong>? It will not be deleted and historical data will remain. Scoped Organization users will be unable to authenticate while it is inactive.</> : <>Reactivate <strong className="text-[var(--color-text)]">{organizationToChange.name}</strong>? Scoped Organization users will be able to authenticate again.</>}</p><div className="flex justify-end gap-3"><Button disabled={isSaving} onClick={() => setOrganizationToChange(null)} variant="secondary">Cancel</Button><Button disabled={isSaving} onClick={() => void changeStatus()}>{isSaving ? "Saving..." : organizationToChange.status === "ACTIVE" ? "Deactivate" : "Reactivate"}</Button></div></div> : null}
