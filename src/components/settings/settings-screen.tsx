@@ -4,7 +4,6 @@ import type React from "react";
 import { useEffect, useState } from "react";
 import {
   BadgeInfo,
-  Building2,
   CheckCircle2,
   Dumbbell,
   HeartPulse,
@@ -28,6 +27,7 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
+import { BranchManagement } from "@/components/branches/branch-management";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { FilterSelect } from "@/components/ui/filter-select";
@@ -41,18 +41,12 @@ import { cn } from "@/lib/utils";
 type SettingsSection = "branches" | "programs" | "goals" | "tags" | "account";
 
 const sections = [
-  { id: "branches", label: "Branches", group: "ORGANIZATION", count: 3, icon: MapPin },
+  { id: "branches", label: "Branches", group: "ORGANIZATION", icon: MapPin },
   { id: "programs", label: "Programs", group: "ORGANIZATION", count: 5, icon: Dumbbell },
   { id: "goals", label: "Goals", group: "MEMBER CONFIGURATION", count: 5, icon: Target },
   { id: "tags", label: "Tags", group: "MEMBER CONFIGURATION", count: 5, icon: Tag },
   { id: "account", label: "Account & Security", group: "PERSONAL", icon: UserRoundCog },
 ] as const;
-
-const branches = [
-  { name: "Andheri West", code: "AND-W", address: "Link Road, Andheri West,\nMumbai 400053", contact: "+91 22 4000 1101", programs: 5, members: 11, status: "Active", tone: "blue", primary: true },
-  { name: "Bandra West", code: "BAN-W", address: "Hill Road, Bandra West,\nMumbai 400050", contact: "+91 22 4000 2202", programs: 4, members: 8, status: "Active", tone: "purple" },
-  { name: "Powai", code: "POW", address: "Hiranandani Gardens, Powai,\nMumbai 400076", contact: "+91 22 4000 3303", programs: 2, members: 0, status: "Inactive", tone: "orange" },
-];
 
 const programs = [
   { name: "Calisthenics", description: "Bodyweight strength and conditioning", branches: "3 branches", plans: 8, batches: 6, members: 5, icon: Dumbbell, tone: "blue" },
@@ -83,7 +77,8 @@ export function SettingsScreen() {
   const [activeSection, setActiveSection] = useState<SettingsSection>("branches");
 
   useEffect(() => {
-    setUser(getStoredUser());
+    const timer = window.setTimeout(() => setUser(getStoredUser()), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   return (
@@ -91,7 +86,7 @@ export function SettingsScreen() {
       <div className="grid gap-[var(--space-6)] xl:grid-cols-[18rem_1fr]">
         <SettingsNav activeSection={activeSection} onChange={setActiveSection} />
         <div className="min-w-0">
-          {activeSection === "branches" ? <BranchesSection /> : null}
+          {activeSection === "branches" ? <BranchManagement /> : null}
           {activeSection === "programs" ? <ProgramsSection /> : null}
           {activeSection === "goals" ? <GoalsSection /> : null}
           {activeSection === "tags" ? <TagsSection /> : null}
@@ -109,15 +104,12 @@ function SettingsNav({
   activeSection: SettingsSection;
   onChange: (section: SettingsSection) => void;
 }) {
-  let lastGroup = "";
-
   return (
     <Card className="h-fit p-[var(--space-4)]">
       <h2 className="text-lg font-bold text-[var(--color-text)]">Settings</h2>
       <div className="mt-[var(--space-4)] border-t border-[var(--color-divider)] pt-[var(--space-3)]">
-        {sections.map((item) => {
-          const showGroup = item.group !== lastGroup;
-          lastGroup = item.group;
+        {sections.map((item, index) => {
+          const showGroup = index === 0 || sections[index - 1].group !== item.group;
           const Icon = item.icon;
           const active = item.id === activeSection;
 
@@ -149,69 +141,6 @@ function SettingsNav({
         })}
       </div>
     </Card>
-  );
-}
-
-function BranchesSection() {
-  return (
-    <SettingsSectionFrame
-      actionLabel="Add Branch"
-      description="Manage gym locations and branch availability."
-      onAction={() => undefined}
-      title="Branches"
-    >
-      <InfoBanner icon={Info} text="Branch-specific members, batches and reports are scoped by the selected branch." />
-      <Card className="overflow-hidden p-[var(--space-4)]">
-        <Toolbar count="3 branches" searchPlaceholder="Search branch by name or location">
-          <ReportFilter options={["All statuses", "Active", "Inactive"]} value="All statuses" />
-          <ReportFilter options={["Mumbai", "Delhi", "Bengaluru"]} value="Mumbai" />
-          <SortControl value="Name" />
-        </Toolbar>
-        <div className="mt-[var(--space-4)] overflow-x-auto">
-          <table className="w-full min-w-[860px] border-collapse text-left text-sm">
-            <TableHead columns={["Branch", "Address", "Contact", "Programs", "Members", "Status", "Actions"]} />
-            <tbody>
-              {branches.map((branch) => (
-                <tr className="border-b border-[var(--color-divider)] last:border-0" key={branch.name}>
-                  <td className="px-[var(--space-4)] py-[var(--space-4)]">
-                    <div className="flex items-center gap-[var(--space-3)]">
-                      <ToneIcon icon={MapPin} tone={branch.tone} />
-                      <div>
-                        <p className="font-bold text-[var(--color-text)]">
-                          {branch.name}
-                          {branch.primary ? <TagChip className="ml-2" tone="blue">Primary</TagChip> : null}
-                        </p>
-                        <p className="mt-1 text-[var(--color-text-secondary)]">{branch.code}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="whitespace-pre-line px-[var(--space-4)] py-[var(--space-4)] text-[var(--color-text)]">{branch.address}</td>
-                  <td className="px-[var(--space-4)] py-[var(--space-4)] text-[var(--color-text)]">{branch.contact}</td>
-                  <td className="px-[var(--space-4)] py-[var(--space-4)] font-bold">{branch.programs}</td>
-                  <td className="px-[var(--space-4)] py-[var(--space-4)] font-bold">{branch.members}</td>
-                  <td className="px-[var(--space-4)] py-[var(--space-4)]"><SettingStatus active={branch.status === "Active"} /></td>
-                  <RowActions />
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-      <Card className="p-[var(--card-padding)]">
-        <h2 className="text-lg font-bold text-[var(--color-text)]">Branch defaults</h2>
-        <p className="mt-1 text-sm text-[var(--color-text-secondary)]">Set default preferences for display and data formatting.</p>
-        <div className="mt-[var(--space-5)] grid grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-[var(--space-4)]">
-          <SettingSelect label="Default branch" value="Andheri West" />
-          <SettingSelect label="Time zone" value="Asia/Kolkata (IST)" />
-          <SettingSelect label="Currency" value="Indian Rupee (INR)" />
-          <SettingSelect label="Date format" value="DD MMM YYYY" />
-        </div>
-        <div className="mt-[var(--space-6)] flex justify-end gap-[var(--space-3)]">
-          <Button variant="secondary">Reset</Button>
-          <Button>Save changes</Button>
-        </div>
-      </Card>
-    </SettingsSectionFrame>
   );
 }
 
@@ -603,23 +532,6 @@ function RowActions() {
         <MoreVertical className="size-[var(--icon-sm)]" />
       </button>
     </td>
-  );
-}
-
-function SettingSelect({ label, value }: { label: string; value: string }) {
-  const [selected, setSelected] = useState(value);
-
-  return (
-    <label className="grid gap-2">
-      <span className="text-xs font-semibold text-[var(--color-text-muted)]">{label}</span>
-      <FilterSelect
-        className="w-full"
-        label={selected}
-        onChange={(event) => setSelected(event.target.value)}
-        options={[value].map((option) => ({ label: option, value: option }))}
-        value={selected}
-      />
-    </label>
   );
 }
 
