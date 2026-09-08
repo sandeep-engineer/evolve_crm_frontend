@@ -46,7 +46,7 @@ import {
   type UpdateLeadPayload,
 } from "@/lib/api/leads";
 import { getPrograms, type Program } from "@/lib/api/programs";
-import { getStaff, type Staff } from "@/lib/api/staff";
+import { getStaff, staffQueryForUser, type Staff } from "@/lib/api/staff";
 import type { AuthUser } from "@/lib/api/auth";
 import { getAccessToken, getStoredUser } from "@/lib/session";
 import { cn } from "@/lib/utils";
@@ -155,15 +155,16 @@ export function LeadsScreen() {
   const [leadToDelete, setLeadToDelete] = useState<Lead | null>(null);
   const [lostRemark, setLostRemark] = useState("");
 
-  const loadMetadata = useCallback(async (accessToken: string) => {
-    const [programData, batchData, staffData] = await Promise.all([
+  const loadMetadata = useCallback(async (accessToken: string, currentUser: AuthUser | null) => {
+    const staffQuery = staffQueryForUser(currentUser);
+    const [programData, batchData, staffResult] = await Promise.all([
       getPrograms(accessToken),
       getBatches(accessToken),
-      getStaff(accessToken),
+      staffQuery ? getStaff(accessToken, staffQuery) : Promise.resolve(null),
     ]);
     setPrograms(programData);
     setBatches(batchData);
-    setStaff(staffData);
+    setStaff(staffResult?.data ?? []);
   }, []);
 
   const loadLeads = useCallback(
@@ -195,14 +196,19 @@ export function LeadsScreen() {
   );
 
   useEffect(() => {
-    const accessToken = getAccessToken();
-    if (!accessToken) return;
+    const timer = window.setTimeout(() => {
+      const accessToken = getAccessToken();
+      if (!accessToken) return;
 
-    setToken(accessToken);
-    setUser(getStoredUser());
-    loadMetadata(accessToken).catch((apiError) => {
-      setError(apiError instanceof Error ? apiError.message : "Unable to load lead metadata.");
-    });
+      const currentUser = getStoredUser();
+      setToken(accessToken);
+      setUser(currentUser);
+      loadMetadata(accessToken, currentUser).catch((apiError) => {
+        setError(apiError instanceof Error ? apiError.message : "Unable to load lead metadata.");
+      });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [loadMetadata]);
 
   useEffect(() => {

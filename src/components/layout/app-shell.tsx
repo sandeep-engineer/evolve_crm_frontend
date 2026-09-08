@@ -38,7 +38,7 @@ import { AuthApiError, getCurrentUser, type AuthUser } from "@/lib/api/auth";
 import { getLeads } from "@/lib/api/leads";
 import { getMembers } from "@/lib/api/members";
 import { getPlans } from "@/lib/api/plans";
-import { getStaff } from "@/lib/api/staff";
+import { getStaff, staffQueryForUser } from "@/lib/api/staff";
 import { clearSession, getAccessToken, saveSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -161,6 +161,7 @@ export function AppShell({ children, user }: AppShellProps) {
         setShellUser(currentUser);
         saveSession(accessToken, currentUser);
 
+        const staffQuery = staffQueryForUser(currentUser);
         const [branchResult, memberResult, leadResult, planResult, staffResult] =
           await Promise.allSettled([
             currentUser.role === "CRM_OWNER"
@@ -169,7 +170,7 @@ export function AppShell({ children, user }: AppShellProps) {
             getMembers(accessToken),
             getLeads(accessToken),
             getPlans(accessToken),
-            getStaff(accessToken),
+            staffQuery ? getStaff(accessToken, staffQuery) : Promise.resolve(null),
           ]);
         if (!isMounted) return;
 
@@ -195,7 +196,7 @@ export function AppShell({ children, user }: AppShellProps) {
         const members = memberResult.status === "fulfilled" ? memberResult.value : [];
         const leads = leadResult.status === "fulfilled" ? leadResult.value : [];
         const plans = planResult.status === "fulfilled" ? planResult.value : [];
-        const staff = staffResult.status === "fulfilled" ? staffResult.value : [];
+        const staff = staffResult.status === "fulfilled" ? staffResult.value?.data ?? [] : [];
 
         setCounts({
           inbox: 7,

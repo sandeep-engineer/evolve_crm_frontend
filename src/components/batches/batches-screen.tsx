@@ -42,7 +42,7 @@ import {
   type CreateBatchPayload,
 } from "@/lib/api/batches";
 import { getPrograms, type Program } from "@/lib/api/programs";
-import { getStaff, type Staff } from "@/lib/api/staff";
+import { getStaff, staffQueryForUser, type Staff } from "@/lib/api/staff";
 import { getAccessToken, getStoredUser } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -116,15 +116,15 @@ export function BatchesScreen() {
   const [batchToDelete, setBatchToDelete] = useState<Batch | null>(null);
   const [form, setForm] = useState<BatchFormState>(emptyForm);
 
-  const loadData = useCallback(async (accessToken = token) => {
-    if (!accessToken) return;
+  const loadData = useCallback(async (accessToken: string, currentUser: AuthUser | null) => {
 
     setIsLoading(true);
     try {
-      const [batchData, programData, staffData] = await Promise.all([
+      const staffQuery = staffQueryForUser(currentUser);
+      const [batchData, programData, staffResult] = await Promise.all([
         getBatches(accessToken),
         getPrograms(accessToken),
-        getStaff(accessToken),
+        staffQuery ? getStaff(accessToken, staffQuery) : Promise.resolve(null),
       ]);
 
       const occupancyEntries = await Promise.all(
@@ -148,7 +148,7 @@ export function BatchesScreen() {
 
       setBatches(batchData);
       setPrograms(programData);
-      setStaff(staffData);
+      setStaff(staffResult?.data ?? []);
       setOccupancyByBatch(Object.fromEntries(occupancyEntries));
       setError("");
     } catch (apiError) {
@@ -156,15 +156,20 @@ export function BatchesScreen() {
     } finally {
       setIsLoading(false);
     }
-  }, [token]);
+  }, []);
 
   useEffect(() => {
-    const accessToken = getAccessToken();
-    if (!accessToken) return;
+    const timer = window.setTimeout(() => {
+      const accessToken = getAccessToken();
+      if (!accessToken) return;
 
-    setToken(accessToken);
-    setUser(getStoredUser());
-    loadData(accessToken);
+      const currentUser = getStoredUser();
+      setToken(accessToken);
+      setUser(currentUser);
+      void loadData(accessToken, currentUser);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [loadData]);
 
   const programOptions = useMemo(() => {
@@ -175,7 +180,7 @@ export function BatchesScreen() {
   }, [programs]);
 
   const trainerOptions = useMemo(() => {
-    const trainers = staff.filter((item) => item.role === "TRAINER");
+    const trainers = staff.filter((item) => item.role === "COACH");
     return [
       { label: "All trainers", value: "" },
       ...trainers.map((item) => ({ label: item.fullName, value: item.id })),
@@ -186,7 +191,7 @@ export function BatchesScreen() {
     return [
       { label: "No trainer", value: "" },
       ...staff
-        .filter((item) => item.role === "TRAINER")
+        .filter((item) => item.role === "COACH")
         .map((item) => ({ label: item.fullName, value: item.id })),
     ];
   }, [staff]);
@@ -297,7 +302,7 @@ export function BatchesScreen() {
 
       setFormMode(null);
       setSelectedBatch(null);
-      await loadData(token);
+      await loadData(token, user);
     } catch (apiError) {
       setError(apiError instanceof Error ? apiError.message : "Unable to save batch.");
     } finally {
@@ -314,7 +319,7 @@ export function BatchesScreen() {
       setBatchToDelete(null);
       setDetailBatch(null);
       setNotice("Batch deleted.");
-      await loadData(token);
+      await loadData(token, user);
     } catch (apiError) {
       setError(apiError instanceof Error ? apiError.message : "Unable to delete batch.");
     } finally {
