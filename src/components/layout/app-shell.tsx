@@ -81,17 +81,6 @@ type SearchItem = {
 
 const BRANCH_KEY = "fitcrm.selectedBranchId";
 
-const fallbackBranches: Branch[] = [
-  {
-    id: "andheri-west",
-    name: "Andheri West",
-    address: "Mumbai",
-    phone: "+91 22 4000 1101",
-    isActive: true,
-    createdAt: "2026-08-01T00:00:00.000Z",
-  },
-];
-
 const fallbackNotifications = [
   {
     icon: CircleAlert,
@@ -117,8 +106,8 @@ export function AppShell({ children, user }: AppShellProps) {
   const router = useRouter();
   const pathname = usePathname();
   const [shellUser, setShellUser] = useState<AuthUser | null>(user);
-  const [branches, setBranches] = useState<Branch[]>(fallbackBranches);
-  const [selectedBranchId, setSelectedBranchId] = useState(fallbackBranches[0].id);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [counts, setCounts] = useState<Record<NavigationCountKey, number>>({
     inbox: 7,
     leads: 18,
@@ -138,8 +127,7 @@ export function AppShell({ children, user }: AppShellProps) {
     year: "numeric",
     weekday: "short",
   }).format(new Date());
-  const selectedBranch =
-    branches.find((branch) => branch.id === selectedBranchId) || branches[0];
+  const selectedBranch = branches.find((branch) => branch.id === selectedBranchId);
   const visibleSearchItems = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return [];
@@ -155,54 +143,56 @@ export function AppShell({ children, user }: AppShellProps) {
   }, [searchItems, searchQuery]);
 
   useEffect(() => {
-    setShellUser(user);
-  }, [user]);
-
-  useEffect(() => {
     const token = getAccessToken();
     const storedBranchId = localStorage.getItem(BRANCH_KEY);
-    if (storedBranchId) setSelectedBranchId(storedBranchId);
     if (!token) return;
+    const accessToken = token;
 
     let isMounted = true;
-    setIsLoadingShell(true);
 
-    Promise.allSettled([
-      getCurrentUser(token),
-      getBranches(token),
-      getMembers(token),
-      getLeads(token),
-      getPlans(token),
-      getStaff(token),
-    ])
-      .then(([userResult, branchResult, memberResult, leadResult, planResult, staffResult]) => {
+    async function loadShell() {
+      try {
+        await Promise.resolve();
+        if (!isMounted) return;
+        setIsLoadingShell(true);
+        const currentUser = await getCurrentUser(accessToken);
         if (!isMounted) return;
 
-        if (userResult.status === "fulfilled") {
-          setShellUser(userResult.value);
-          saveSession(token, userResult.value);
-        } else if (
-          userResult.reason instanceof AuthApiError &&
-          userResult.reason.status === 401
-        ) {
-          clearSession();
-          router.replace("/");
-          return;
-        }
+        setShellUser(currentUser);
+        saveSession(accessToken, currentUser);
 
-        if (branchResult.status === "fulfilled" && branchResult.value.length) {
-          setBranches(branchResult.value);
+        const [branchResult, memberResult, leadResult, planResult, staffResult] =
+          await Promise.allSettled([
+            currentUser.role === "CRM_OWNER"
+              ? Promise.resolve<Branch[]>([])
+              : getBranches(accessToken),
+            getMembers(accessToken),
+            getLeads(accessToken),
+            getPlans(accessToken),
+            getStaff(accessToken),
+          ]);
+        if (!isMounted) return;
+
+        if (branchResult.status === "fulfilled") {
+          const latestBranches = branchResult.value;
+          setBranches(latestBranches);
           const nextBranch =
-            storedBranchId &&
-            branchResult.value.some((branch) => branch.id === storedBranchId)
+            storedBranchId && latestBranches.some((branch) => branch.id === storedBranchId)
               ? storedBranchId
-              : branchResult.value[0].id;
+              : latestBranches[0]?.id ?? null;
           setSelectedBranchId(nextBranch);
-          localStorage.setItem(BRANCH_KEY, nextBranch);
+          if (nextBranch) {
+            localStorage.setItem(BRANCH_KEY, nextBranch);
+          } else {
+            localStorage.removeItem(BRANCH_KEY);
+          }
+        } else {
+          setBranches([]);
+          setSelectedBranchId(null);
+          localStorage.removeItem(BRANCH_KEY);
         }
 
-        const members =
-          memberResult.status === "fulfilled" ? memberResult.value : [];
+        const members = memberResult.status === "fulfilled" ? memberResult.value : [];
         const leads = leadResult.status === "fulfilled" ? leadResult.value : [];
         const plans = planResult.status === "fulfilled" ? planResult.value : [];
         const staff = staffResult.status === "fulfilled" ? staffResult.value : [];
@@ -239,10 +229,17 @@ export function AppShell({ children, user }: AppShellProps) {
             type: "Staff" as const,
           })),
         ]);
-      })
-      .finally(() => {
+      } catch (error) {
+        if (error instanceof AuthApiError && error.status === 401) {
+          clearSession();
+          router.replace("/");
+        }
+      } finally {
         if (isMounted) setIsLoadingShell(false);
-      });
+      }
+    }
+
+    void loadShell();
 
     return () => {
       isMounted = false;
@@ -330,7 +327,7 @@ export function AppShell({ children, user }: AppShellProps) {
             onClick={() => setIsBranchOpen((value) => !value)}
             type="button"
           >
-            <span className="truncate">{selectedBranch?.name || "Select branch"}</span>
+              <span className="truncate">{selectedBranch?.name || "No branch available"}</span>
             <ChevronDown className="size-[var(--icon-sm)] shrink-0" />
           </button>
           {isBranchOpen ? (
@@ -420,7 +417,7 @@ export function AppShell({ children, user }: AppShellProps) {
                 variant="secondary"
               >
               <MapPin className="size-[var(--icon-sm)]" />
-                {selectedBranch?.name || "Select branch"}
+                {selectedBranch?.name || "No branch available"}
               <ChevronDown className="size-[var(--icon-sm)]" />
             </Button>
               {isBranchOpen ? (
@@ -497,14 +494,14 @@ function BranchMenu({
 }: {
   branches: Branch[];
   onSelect: (branchId: string) => void;
-  selectedBranchId: string;
+  selectedBranchId: string | null;
 }) {
   return (
     <div className="absolute right-0 top-[calc(100%+0.5rem)] z-[var(--z-dropdown)] w-64 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
       <div className="border-b border-[var(--color-divider)] px-3 py-2 text-xs font-semibold uppercase text-[var(--color-text-muted)]">
         Branch
       </div>
-      {branches.map((branch) => (
+      {branches.length ? branches.map((branch) => (
         <button
           className="flex w-full items-start gap-3 px-3 py-3 text-left hover:bg-[var(--color-surface-hover)]"
           key={branch.id}
@@ -524,7 +521,9 @@ function BranchMenu({
             <Check className="size-[var(--icon-sm)] text-[var(--color-success)]" />
           ) : null}
         </button>
-      ))}
+      )) : (
+        <p className="px-3 py-3 text-sm text-[var(--color-text-secondary)]">No branches available.</p>
+      )}
     </div>
   );
 }
@@ -561,7 +560,7 @@ function SearchResults({
         ))
       ) : (
         <div className="px-4 py-6 text-sm text-[var(--color-text-secondary)]">
-          No results found for "{query}".
+          No results found for &quot;{query}&quot;.
         </div>
       )}
     </div>
