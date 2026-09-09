@@ -1,3 +1,5 @@
+import { API_BASE_URL } from "@/lib/api/config";
+
 export type Batch = {
   id: string;
   branchId?: string | null;
@@ -46,10 +48,6 @@ export type CreateBatchPayload = {
 };
 
 export type UpdateBatchPayload = Partial<CreateBatchPayload>;
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ||
-  "http://localhost:3000";
 
 async function request<T>(
   token: string,

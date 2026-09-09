@@ -1,3 +1,5 @@
+import { API_BASE_URL } from "@/lib/api/config";
+
 export type Program = {
   id: string;
   name: string;
@@ -11,10 +13,6 @@ export type CreateProgramPayload = {
   description?: string;
   isActive?: boolean;
 };
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ||
-  "http://localhost:3000";
 
 async function request<T>(
   token: string,
