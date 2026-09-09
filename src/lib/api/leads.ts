@@ -1,6 +1,4 @@
-import type { Batch } from "@/lib/api/batches";
-import type { Program } from "@/lib/api/programs";
-import type { Staff } from "@/lib/api/staff";
+import { API_BASE_URL } from "@/lib/api/config";
 
 export type LeadSource =
   | "WHATSAPP_INQUIRY"
@@ -18,197 +16,239 @@ export type BatchTypePref =
   | "PERSONAL_TRAINING";
 
 export type LeadStage =
-  | "ENQUIRY"
+  | "NEW"
+  | "CONTACTED"
+  | "VISIT_SCHEDULED"
+  | "VISITED"
+  | "TRIAL_REQUESTED"
   | "TRIAL_SCHEDULED"
   | "TRIAL_COMPLETED"
+  | "READY_TO_JOIN"
   | "CONVERTED"
-  | "LOST_DECLINE";
+  | "LOST";
 
 export type LeadStatus =
-  | "NEW"
-  | "LEAD_FOLLOW_UP"
-  | "LEAD_UNREACHABLE";
-
-export type FollowUpOutcome =
-  | "PENDING"
-  | "DONE"
+  | "ACTIVE"
+  | "FOLLOW_UP"
   | "UNREACHABLE"
-  | "RESCHEDULED";
+  | "DORMANT"
+  | "ARCHIVED";
 
-export type LeadInterest = {
-  leadId: string;
-  programId: string;
-  program?: Program;
+export type LeadCurrentIntent =
+  | "UNDECIDED"
+  | "NEEDS_TIME"
+  | "TRIAL"
+  | "DIRECT_JOINING";
+
+export type LeadCommunicationChannel =
+  | "PHONE_CALL"
+  | "WHATSAPP"
+  | "SMS"
+  | "EMAIL"
+  | "IN_PERSON";
+
+export type SafeBranchSummary = {
+  id: string;
+  name: string;
+  organizationId: string;
 };
 
-export type Lead = {
+export type SafeAssignedUserSummary = {
   id: string;
-  branchId?: string | null;
   name: string;
-  phone: string;
-  dob?: string | null;
+  role: "BRANCH_ADMIN" | "RECEPTIONIST" | string;
+  organizationId: string | null;
+  branchId: string | null;
+};
+
+export type LeadSummary = {
+  id: string;
+  branchId: string;
+  branch: SafeBranchSummary | null;
+  organizationId: string | null;
+  fullName: string;
+  primaryPhone: string | null;
+  alternatePhone: string | null;
+  email: string | null;
   source: LeadSource;
-  batchTypePref: BatchTypePref;
-  preferredBatchId?: string | null;
-  preferredBatch?: Batch | null;
+  preferredChannel: LeadCommunicationChannel | null;
+  currentIntent: LeadCurrentIntent;
+  batchTypePref: BatchTypePref | null;
+  preferredBatchId: string | null;
   stage: LeadStage;
   status: LeadStatus;
-  nextFollowUpAt?: string | null;
-  remark?: string | null;
-  assignedStaffId?: string | null;
-  assignedStaff?: Staff | null;
-  interests?: LeadInterest[];
+  assignedUser: SafeAssignedUserSummary | null;
+  currentSummary: string | null;
+  lastContactedAt: string | null;
+  nextFollowUpAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
-export type LeadFollowUp = {
-  id: string;
-  leadId: string;
-  scheduledAt: string;
-  note?: string | null;
-  outcome: FollowUpOutcome;
-  createdAt: string;
+export type PaginationMeta = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
 };
 
-export type LeadsQuery = {
+export type PaginatedLeads = {
+  data: LeadSummary[];
+  meta: PaginationMeta;
+};
+
+export type LeadListQuery = {
+  organizationId?: string;
+  branchId: string;
+  page?: number;
+  limit?: number;
+  search?: string;
   stage?: LeadStage;
   status?: LeadStatus;
   source?: LeadSource;
-  search?: string;
   programId?: string;
+  assignedUserId?: string;
+  createdFrom?: string;
+  createdTo?: string;
+  followUpFrom?: string;
+  followUpTo?: string;
 };
 
-export type CreateLeadPayload = {
-  name: string;
-  phone: string;
-  dob?: string;
+export type CreateLeadRequest = {
+  fullName: string;
+  primaryPhone: string;
+  alternatePhone?: string | null;
+  email?: string | null;
+  dob?: string | null;
   source: LeadSource;
-  batchTypePref?: BatchTypePref;
-  preferredBatchId?: string;
-  branchId?: string;
+  sourceDetails?: string | null;
+  preferredChannel?: LeadCommunicationChannel | null;
+  currentIntent?: LeadCurrentIntent;
+  batchTypePref?: BatchTypePref | null;
+  preferredBatchId?: string | null;
+  preferredDays?: number[] | null;
+  preferredStartTime?: string | null;
+  preferredEndTime?: string | null;
   programIds?: string[];
   goalIds?: string[];
-  nextFollowUpAt?: string;
-  remark?: string;
-  assignedStaffId?: string;
+  assignedUserId?: string | null;
+  currentSummary?: string | null;
 };
 
-export type UpdateLeadPayload = Partial<CreateLeadPayload> & {
-  stage?: LeadStage;
-  status?: LeadStatus;
+export type LeadPhoneConflict = {
+  code: "LEAD_PHONE_CONFLICT";
+  message: string;
+  existingLead: Pick<
+    LeadSummary,
+    "id" | "fullName" | "primaryPhone" | "stage" | "status" | "lastContactedAt"
+  > | null;
 };
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ||
-  "http://localhost:3000";
+export type BackendErrorResponse = {
+  code?: string;
+  message?: string | string[];
+  error?: string;
+  statusCode?: number;
+  existingLead?: LeadPhoneConflict["existingLead"];
+};
+
+export class LeadApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly details?: BackendErrorResponse,
+  ) {
+    super(message);
+    this.name = "LeadApiError";
+  }
+}
+
+export class LeadPhoneConflictError extends LeadApiError {
+  readonly existingLead: LeadPhoneConflict["existingLead"];
+
+  constructor(details: LeadPhoneConflict, status: number) {
+    super(details.message, status, details);
+    this.name = "LeadPhoneConflictError";
+    this.existingLead = details.existingLead;
+  }
+}
+
+function messageForStatus(status: number, data: BackendErrorResponse | null) {
+  if (data?.code === "LEAD_PHONE_CONFLICT" && typeof data.message === "string") {
+    return data.message;
+  }
+  if (typeof data?.message === "string") return data.message;
+  if (Array.isArray(data?.message)) return data.message.join(", ");
+  if (status === 400) return "Please check the Lead details and try again.";
+  if (status === 401) return "Your session has expired. Please sign in again.";
+  if (status === 403) return "You do not have permission to use Lead Management.";
+  if (status === 404) return "The requested Lead or Branch could not be found.";
+  if (status === 409) return "This Lead conflicts with existing Branch data.";
+  return "Unable to complete the Lead request.";
+}
 
 async function request<T>(
   token: string,
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      Authorization: `Bearer ${token}`,
-      ...options.headers,
-    },
-  });
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...options.headers,
+      },
+    });
+    const data = await response.json().catch(() => null) as BackendErrorResponse | null;
 
-  const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      if (
+        response.status === 409 &&
+        data?.code === "LEAD_PHONE_CONFLICT" &&
+        typeof data.message === "string"
+      ) {
+        throw new LeadPhoneConflictError(
+          {
+            code: "LEAD_PHONE_CONFLICT",
+            message: data.message,
+            existingLead: data.existingLead ?? null,
+          },
+          response.status,
+        );
+      }
+      throw new LeadApiError(messageForStatus(response.status, data), response.status, data ?? undefined);
+    }
 
-  if (!response.ok) {
-    const message =
-      typeof data?.message === "string"
-        ? data.message
-        : Array.isArray(data?.message)
-          ? data.message.join(", ")
-          : "Lead request failed.";
-    throw new Error(message);
+    return data as T;
+  } catch (error) {
+    if (error instanceof LeadApiError) throw error;
+    throw new LeadApiError("Unable to reach the server. Please try again.", 0);
   }
-
-  return data as T;
 }
 
-function queryString(query: LeadsQuery = {}) {
+function queryString(query: LeadListQuery) {
   const params = new URLSearchParams();
   Object.entries(query).forEach(([key, value]) => {
-    if (value) params.set(key, value);
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
   });
-
-  const value = params.toString();
-  return value ? `?${value}` : "";
+  return params.toString();
 }
 
-export function getLeads(token: string, query: LeadsQuery = {}) {
-  return request<Lead[]>(token, `/leads${queryString(query)}`);
+export function listLeads(token: string, query: LeadListQuery) {
+  const suffix = queryString(query);
+  return request<PaginatedLeads>(token, `/leads?${suffix}`);
 }
 
-export function createLead(token: string, payload: CreateLeadPayload) {
-  return request<Lead>(token, "/leads", {
-    body: JSON.stringify(payload),
-    method: "POST",
-  });
-}
-
-export function getLead(token: string, id: string) {
-  return request<Lead>(token, `/leads/${id}`);
-}
-
-export function updateLead(token: string, id: string, payload: UpdateLeadPayload) {
-  return request<Lead>(token, `/leads/${id}`, {
-    body: JSON.stringify(payload),
-    method: "PATCH",
-  });
-}
-
-export function deleteLead(token: string, id: string) {
-  return request<{ removed?: boolean }>(token, `/leads/${id}`, {
-    method: "DELETE",
-  });
-}
-
-export function getLeadFollowUps(token: string, id: string) {
-  return request<LeadFollowUp[]>(token, `/leads/${id}/follow-ups`);
-}
-
-export function addLeadFollowUp(
+export function createLeadForBranch(
   token: string,
-  id: string,
-  payload: { scheduledAt: string; note?: string; outcome?: FollowUpOutcome },
+  branchId: string,
+  payload: CreateLeadRequest,
 ) {
-  return request<LeadFollowUp>(token, `/leads/${id}/follow-ups`, {
-    body: JSON.stringify(payload),
-    method: "POST",
-  });
-}
-
-export function markLeadLost(token: string, id: string, remark?: string) {
-  return request<Lead>(token, `/leads/${id}/mark-lost`, {
-    body: JSON.stringify({ remark }),
-    method: "POST",
-  });
-}
-
-export function reEngageLead(token: string, id: string) {
-  return request<Lead>(token, `/leads/${id}/re-engage`, {
-    method: "POST",
-  });
-}
-
-export function convertLeadToMember(
-  token: string,
-  id: string,
-  payload: {
-    address?: string;
-    emergencyContactName?: string;
-    emergencyContactNumber?: string;
-    email?: string;
-  },
-) {
-  return request(token, `/leads/${id}/convert-to-member`, {
+  return request<LeadSummary>(token, `/branches/${encodeURIComponent(branchId)}/leads`, {
     body: JSON.stringify(payload),
     method: "POST",
   });

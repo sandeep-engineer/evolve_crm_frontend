@@ -3,1263 +3,1666 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Bookmark,
-  Calendar,
-  ChevronDown,
+  AlertCircle,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Filter,
-  MessageCircle,
-  MoreVertical,
-  Phone,
+  Loader2,
   Plus,
-  RotateCcw,
+  RefreshCw,
   Search,
+  ShieldAlert,
+  SlidersHorizontal,
+  UserPlus,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
-import { FilterButton } from "@/components/ui/filter-button";
 import { FilterSelect } from "@/components/ui/filter-select";
 import { InitialAvatar } from "@/components/ui/initial-avatar";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { AuthApiError, getCurrentUser, type AuthUser } from "@/lib/api/auth";
 import { getBatches, type Batch } from "@/lib/api/batches";
+import { listBranchAdmins, type BranchAdmin } from "@/lib/api/branch-admins";
+import { listBranchPersonnel, type BranchPersonnel } from "@/lib/api/branch-personnel";
+import { getBranches, type Branch } from "@/lib/api/branches";
+import { getGoals, type Goal } from "@/lib/api/goals";
 import {
-  addLeadFollowUp,
-  convertLeadToMember,
-  createLead,
-  deleteLead,
-  getLead,
-  getLeadFollowUps,
-  getLeads,
-  markLeadLost,
-  reEngageLead,
-  updateLead,
+  createLeadForBranch,
+  LeadApiError,
+  LeadPhoneConflictError,
+  listLeads,
   type BatchTypePref,
-  type CreateLeadPayload,
-  type FollowUpOutcome,
-  type Lead,
-  type LeadFollowUp,
+  type CreateLeadRequest,
+  type LeadCommunicationChannel,
+  type LeadCurrentIntent,
   type LeadSource,
   type LeadStage,
   type LeadStatus,
-  type UpdateLeadPayload,
+  type LeadSummary,
+  type PaginationMeta,
 } from "@/lib/api/leads";
+import { getOrganizations, type Organization } from "@/lib/api/organizations";
 import { getPrograms, type Program } from "@/lib/api/programs";
-import { getStaff, staffQueryForUser, type Staff } from "@/lib/api/staff";
-import type { AuthUser } from "@/lib/api/auth";
-import { getAccessToken, getStoredUser } from "@/lib/session";
+import { clearSession, getAccessToken, getStoredUser, saveSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
-type LeadGroup = "OVERDUE" | "TODAY" | "UPCOMING";
-type AvatarTone = "blue" | "green" | "orange" | "purple" | "red" | "teal";
-type CreatedRange = "ALL" | "TODAY" | "LAST_7" | "THIS_MONTH";
-
-type LeadFormState = CreateLeadPayload & {
-  stage?: LeadStage;
-  status?: LeadStatus;
+type AssigneeOption = {
+  id: string;
+  name: string;
+  role: "BRANCH_ADMIN" | "RECEPTIONIST";
 };
 
-const emptyLeadForm: LeadFormState = {
-  assignedStaffId: "",
-  batchTypePref: "GROUP_BATCH",
+type LeadFormState = {
+  alternatePhone: string;
+  assignedUserId: string;
+  batchTypePref: BatchTypePref | "";
+  currentIntent: LeadCurrentIntent;
+  currentSummary: string;
+  dob: string;
+  email: string;
+  fullName: string;
+  goalIds: string[];
+  preferredBatchId: string;
+  preferredChannel: LeadCommunicationChannel | "";
+  preferredDays: number[];
+  preferredEndTime: string;
+  preferredStartTime: string;
+  primaryPhone: string;
+  programIds: string[];
+  source: LeadSource;
+  sourceDetails: string;
+};
+
+type FilterState = {
+  assignedUserId: string;
+  createdFrom: string;
+  createdTo: string;
+  followUpFrom: string;
+  followUpTo: string;
+  programId: string;
+  source: LeadSource | "";
+  stage: LeadStage | "";
+  status: LeadStatus | "";
+};
+
+const emptyForm: LeadFormState = {
+  alternatePhone: "",
+  assignedUserId: "",
+  batchTypePref: "",
+  currentIntent: "UNDECIDED",
+  currentSummary: "",
   dob: "",
-  name: "",
-  nextFollowUpAt: "",
-  phone: "",
+  email: "",
+  fullName: "",
+  goalIds: [],
   preferredBatchId: "",
+  preferredChannel: "",
+  preferredDays: [],
+  preferredEndTime: "",
+  preferredStartTime: "",
+  primaryPhone: "",
   programIds: [],
-  remark: "",
   source: "WHATSAPP_INQUIRY",
-  stage: "ENQUIRY",
-  status: "NEW",
+  sourceDetails: "",
 };
 
-const sourceOptions: Array<{ label: string; value: LeadSource | "" }> = [
-  { label: "All Sources", value: "" },
-  { label: "WhatsApp Inquiry", value: "WHATSAPP_INQUIRY" },
+const emptyFilters: FilterState = {
+  assignedUserId: "",
+  createdFrom: "",
+  createdTo: "",
+  followUpFrom: "",
+  followUpTo: "",
+  programId: "",
+  source: "",
+  stage: "",
+  status: "",
+};
+
+const leadSources: Array<{ label: string; value: LeadSource }> = [
+  { label: "WhatsApp inquiry", value: "WHATSAPP_INQUIRY" },
   { label: "Walk-in", value: "WALK_IN" },
   { label: "Referral", value: "REFERRAL" },
-  { label: "Instagram Ads", value: "INSTAGRAM_ADS" },
-  { label: "Facebook Ads", value: "FACEBOOK_ADS" },
-  { label: "Google Ads", value: "GOOGLE_ADS" },
+  { label: "Instagram ads", value: "INSTAGRAM_ADS" },
+  { label: "Facebook ads", value: "FACEBOOK_ADS" },
+  { label: "Google ads", value: "GOOGLE_ADS" },
   { label: "Website", value: "WEBSITE" },
   { label: "Other", value: "OTHER" },
 ];
 
-const createdOptions: Array<{ label: string; value: CreatedRange }> = [
-  { label: "All Time", value: "ALL" },
-  { label: "Today", value: "TODAY" },
-  { label: "Last 7 Days", value: "LAST_7" },
-  { label: "This Month", value: "THIS_MONTH" },
-];
-
-const statusOptions: Array<{ label: string; value: LeadStatus | "" }> = [
-  { label: "All Status", value: "" },
+const leadStages: Array<{ label: string; value: LeadStage }> = [
   { label: "New", value: "NEW" },
-  { label: "Lead Follow-up", value: "LEAD_FOLLOW_UP" },
-  { label: "Unreachable", value: "LEAD_UNREACHABLE" },
+  { label: "Contacted", value: "CONTACTED" },
+  { label: "Visit scheduled", value: "VISIT_SCHEDULED" },
+  { label: "Visited", value: "VISITED" },
+  { label: "Trial requested", value: "TRIAL_REQUESTED" },
+  { label: "Trial scheduled", value: "TRIAL_SCHEDULED" },
+  { label: "Trial completed", value: "TRIAL_COMPLETED" },
+  { label: "Ready to join", value: "READY_TO_JOIN" },
+  { label: "Converted", value: "CONVERTED" },
+  { label: "Lost", value: "LOST" },
 ];
 
-const stageTabs: Array<{ label: string; stage: LeadStage }> = [
-  { label: "Enquiries", stage: "ENQUIRY" },
-  { label: "Trial Handling", stage: "TRIAL_SCHEDULED" },
-  { label: "Lost/Declined", stage: "LOST_DECLINE" },
+const leadStatuses: Array<{ label: string; value: LeadStatus }> = [
+  { label: "Active", value: "ACTIVE" },
+  { label: "Follow-up", value: "FOLLOW_UP" },
+  { label: "Unreachable", value: "UNREACHABLE" },
+  { label: "Dormant", value: "DORMANT" },
+  { label: "Archived", value: "ARCHIVED" },
 ];
 
-const groupMeta: Record<LeadGroup, { label: string; tone: string }> = {
-  OVERDUE: {
-    label: "Overdue",
-    tone: "bg-[var(--color-danger-surface)] text-[var(--color-danger)]",
-  },
-  TODAY: {
-    label: "Today",
-    tone: "bg-[var(--color-info-surface)] text-[var(--color-primary)]",
-  },
-  UPCOMING: {
-    label: "Upcoming",
-    tone: "bg-[var(--color-surface-muted)] text-[var(--color-text-secondary)]",
-  },
-};
+const leadIntentOptions: Array<{ label: string; value: LeadCurrentIntent }> = [
+  { label: "Undecided", value: "UNDECIDED" },
+  { label: "Needs time", value: "NEEDS_TIME" },
+  { label: "Trial", value: "TRIAL" },
+  { label: "Direct joining", value: "DIRECT_JOINING" },
+];
+
+const preferredChannels: Array<{ label: string; value: LeadCommunicationChannel }> = [
+  { label: "Phone call", value: "PHONE_CALL" },
+  { label: "WhatsApp", value: "WHATSAPP" },
+  { label: "SMS", value: "SMS" },
+  { label: "Email", value: "EMAIL" },
+  { label: "In person", value: "IN_PERSON" },
+];
+
+const batchTypeOptions: Array<{ label: string; value: BatchTypePref }> = [
+  { label: "Group batch", value: "GROUP_BATCH" },
+  { label: "Group PT", value: "GROUP_PT" },
+  { label: "Personal training", value: "PERSONAL_TRAINING" },
+];
+
+const dayOptions = [
+  { label: "Mon", value: 1 },
+  { label: "Tue", value: 2 },
+  { label: "Wed", value: 3 },
+  { label: "Thu", value: 4 },
+  { label: "Fri", value: 5 },
+  { label: "Sat", value: 6 },
+  { label: "Sun", value: 7 },
+];
+
+const pageSize = 20;
 
 export function LeadsScreen() {
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const router = useRouter();
   const [token, setToken] = useState("");
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [allLeads, setAllLeads] = useState<Lead[]>([]);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
+  const [selectedBranchId, setSelectedBranchId] = useState("");
   const [programs, setPrograms] = useState<Program[]>([]);
+  const [goals, setGoals] = useState<Goal[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
-  const [staff, setStaff] = useState<Staff[]>([]);
-  const [activeStage, setActiveStage] = useState<LeadStage>("ENQUIRY");
+  const [assignees, setAssignees] = useState<AssigneeOption[]>([]);
+  const [leads, setLeads] = useState<LeadSummary[]>([]);
+  const [meta, setMeta] = useState<PaginationMeta>({
+    limit: pageSize,
+    page: 1,
+    total: 0,
+    totalPages: 1,
+  });
+  const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [created, setCreated] = useState<CreatedRange>("ALL");
-  const [source, setSource] = useState<LeadSource | "">("");
-  const [programId, setProgramId] = useState("");
-  const [status, setStatus] = useState<LeadStatus | "">("");
-  const [batchId, setBatchId] = useState("");
-  const [sort, setSort] = useState("FOLLOW_UP_DATE");
-  const [isLoading, setIsLoading] = useState(true);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [filters, setFilters] = useState<FilterState>(emptyFilters);
+  const [isScopeLoading, setIsScopeLoading] = useState(true);
+  const [isMetadataLoading, setIsMetadataLoading] = useState(false);
+  const [isListLoading, setIsListLoading] = useState(false);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [leadForm, setLeadForm] = useState<LeadFormState>(emptyLeadForm);
-  const [leadDialogMode, setLeadDialogMode] = useState<"create" | "edit" | null>(null);
-  const [detailLead, setDetailLead] = useState<Lead | null>(null);
-  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
-  const [followUps, setFollowUps] = useState<LeadFollowUp[]>([]);
-  const [followUpForm, setFollowUpForm] = useState({
-    note: "",
-    outcome: "PENDING" as FollowUpOutcome,
-    scheduledAt: "",
-  });
-  const [leadToDelete, setLeadToDelete] = useState<Lead | null>(null);
-  const [lostRemark, setLostRemark] = useState("");
+  const [metadataWarning, setMetadataWarning] = useState("");
+  const [formError, setFormError] = useState("");
+  const [phoneConflict, setPhoneConflict] = useState<LeadPhoneConflictError | null>(null);
+  const [form, setForm] = useState<LeadFormState>(emptyForm);
 
-  const loadMetadata = useCallback(async (accessToken: string, currentUser: AuthUser | null) => {
-    const staffQuery = staffQueryForUser(currentUser);
-    const [programData, batchData, staffResult] = await Promise.all([
-      getPrograms(accessToken),
-      getBatches(accessToken),
-      staffQuery ? getStaff(accessToken, staffQuery) : Promise.resolve(null),
-    ]);
-    setPrograms(programData);
-    setBatches(batchData);
-    setStaff(staffResult?.data ?? []);
-  }, []);
-
-  const loadLeads = useCallback(
-    async (accessToken = token) => {
-      if (!accessToken) return;
-
-      setIsLoading(true);
-      try {
-        const query = {
-          programId,
-          search,
-          source: source || undefined,
-          status: status || undefined,
-        };
-        const [data, countData] = await Promise.all([
-          getLeads(accessToken, { ...query, stage: activeStage }),
-          getLeads(accessToken, query),
-        ]);
-        setLeads(sortLeads(data, sort));
-        setAllLeads(countData);
-        setError("");
-      } catch (apiError) {
-        setError(apiError instanceof Error ? apiError.message : "Unable to load leads.");
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [activeStage, programId, search, sort, source, status, token],
+  const canUseLeads = Boolean(user && user.role !== "LEAD_CALLER");
+  const fixedBranchId =
+    user?.role === "BRANCH_ADMIN" || user?.role === "RECEPTIONIST"
+      ? user.branchId ?? ""
+      : "";
+  const effectiveOrganizationId =
+    user?.role === "CRM_OWNER"
+      ? selectedOrganizationId
+      : user?.organizationId ?? "";
+  const effectiveBranchId = fixedBranchId || selectedBranchId;
+  const selectedOrganization = organizations.find(
+    (organization) => organization.id === selectedOrganizationId,
   );
+  const selectedBranch = branches.find((branch) => branch.id === selectedBranchId);
+  const activePrograms = useMemo(
+    () => programs.filter((program) => program.isActive),
+    [programs],
+  );
+  const activeGoals = useMemo(
+    () => goals.filter((goal) => goal.isActive),
+    [goals],
+  );
+  const branchBatches = useMemo(
+    () =>
+      batches.filter(
+        (batch) =>
+          batch.status === "ACTIVE" &&
+          (!batch.branchId || batch.branchId === effectiveBranchId),
+      ),
+    [batches, effectiveBranchId],
+  );
+  const canRequestLeads = Boolean(canUseLeads && effectiveBranchId && effectiveOrganizationId);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const accessToken = getAccessToken();
-      if (!accessToken) return;
+    const accessToken = getAccessToken();
+    const storedUser = getStoredUser();
+    if (!accessToken) {
+      router.replace("/");
+      return;
+    }
 
-      const currentUser = getStoredUser();
-      setToken(accessToken);
-      setUser(currentUser);
-      loadMetadata(accessToken, currentUser).catch((apiError) => {
-        setError(apiError instanceof Error ? apiError.message : "Unable to load lead metadata.");
-      });
+    const currentToken = accessToken;
+    let isMounted = true;
+
+    async function loadCurrentUser() {
+      try {
+        const currentUser = await getCurrentUser(currentToken);
+        if (!isMounted) return;
+        setUser(currentUser);
+        saveSession(currentToken, currentUser);
+      } catch (apiError) {
+        if (apiError instanceof AuthApiError && apiError.status === 401) {
+          clearSession();
+          router.replace("/");
+          return;
+        }
+        if (isMounted) setError("Unable to load your profile.");
+      }
+    }
+
+    const timeout = window.setTimeout(() => {
+      if (!isMounted) return;
+      setToken(currentToken);
+      setUser(storedUser);
+      void loadCurrentUser();
     }, 0);
 
-    return () => window.clearTimeout(timer);
-  }, [loadMetadata]);
+    return () => {
+      isMounted = false;
+      window.clearTimeout(timeout);
+    };
+  }, [router]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      loadLeads();
-    }, 150);
+      setDebouncedSearch(search.trim());
+    }, 300);
 
     return () => window.clearTimeout(timeout);
-  }, [loadLeads]);
+  }, [search]);
 
-  const visibleLeads = useMemo(() => {
-    return leads.filter((lead) => {
-      const matchesBatch = batchId ? lead.preferredBatchId === batchId : true;
-      return matchesBatch && isInCreatedRange(lead.createdAt, created);
-    });
-  }, [batchId, created, leads]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setPage(1);
+    }, 0);
 
-  const stageCounts = useMemo(() => {
-    return stageTabs.reduce<Record<LeadStage, number>>((acc, tab) => {
-      acc[tab.stage] = allLeads.filter((lead) => lead.stage === tab.stage).length;
-      return acc;
-    }, {} as Record<LeadStage, number>);
-  }, [allLeads]);
+    return () => window.clearTimeout(timeout);
+  }, [
+    debouncedSearch,
+    effectiveBranchId,
+    filters.assignedUserId,
+    filters.createdFrom,
+    filters.createdTo,
+    filters.followUpFrom,
+    filters.followUpTo,
+    filters.programId,
+    filters.source,
+    filters.stage,
+    filters.status,
+  ]);
 
-  const overdueCount = visibleLeads.filter((lead) => groupLead(lead) === "OVERDUE").length;
+  useEffect(() => {
+    if (!token || !user) return;
+    const currentUser = user;
+    let isMounted = true;
 
-  const openCreateDialog = () => {
-    setSelectedLead(null);
-    setLeadForm(emptyLeadForm);
-    setLeadDialogMode("create");
-  };
-
-  const openEditDialog = (lead: Lead) => {
-    setSelectedLead(lead);
-    setLeadForm({
-      assignedStaffId: lead.assignedStaffId ?? "",
-      batchTypePref: lead.batchTypePref,
-      dob: dateOnly(lead.dob),
-      name: lead.name,
-      nextFollowUpAt: toDateTimeLocal(lead.nextFollowUpAt),
-      phone: lead.phone,
-      preferredBatchId: lead.preferredBatchId ?? "",
-      programIds: lead.interests?.map((interest) => interest.programId) ?? [],
-      remark: lead.remark ?? "",
-      source: lead.source,
-      stage: lead.stage,
-      status: lead.status,
-    });
-    setLeadDialogMode("edit");
-  };
-
-  const saveLead = async () => {
-    if (!token) return;
-
-    setIsSaving(true);
-    setNotice("");
-    try {
-      const payload = cleanLeadPayload(leadForm);
-      if (leadDialogMode === "edit" && selectedLead) {
-        await updateLead(token, selectedLead.id, payload as UpdateLeadPayload);
-        setNotice("Lead updated.");
-      } else {
-        await createLead(token, payload as CreateLeadPayload);
-        setNotice("Lead created.");
+    async function loadScope() {
+      if (currentUser.role === "LEAD_CALLER") {
+        setIsScopeLoading(false);
+        return;
       }
-      setLeadDialogMode(null);
-      await loadLeads();
-    } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Unable to save lead.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
-  const openLeadDetails = async (lead: Lead) => {
-    if (!token) return;
-
-    setSelectedLead(lead);
-    setDetailLead(lead);
-    setFollowUps([]);
-    try {
-      const [freshLead, leadFollowUps] = await Promise.all([
-        getLead(token, lead.id),
-        getLeadFollowUps(token, lead.id),
-      ]);
-      setDetailLead(freshLead);
-      setFollowUps(leadFollowUps);
+      setIsScopeLoading(true);
       setError("");
-    } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Unable to load lead details.");
+      try {
+        if (currentUser.role === "CRM_OWNER") {
+          const result = await getOrganizations(token, { limit: 100, status: "ACTIVE" });
+          if (!isMounted) return;
+          setOrganizations(result.data);
+          if (!selectedOrganizationId && result.data.length === 1) {
+            setSelectedOrganizationId(result.data[0].id);
+          }
+          return;
+        }
+
+        const organizationId = currentUser.organizationId;
+        if (!organizationId) {
+          setError("Your account is missing an Organization scope.");
+          return;
+        }
+        setSelectedOrganizationId(organizationId);
+
+        if (currentUser.role === "ORGANIZATION_OWNER") {
+          const scopedBranches = await getBranches(token, {
+            limit: 100,
+            organizationId,
+            status: "ACTIVE",
+          });
+          if (!isMounted) return;
+          setBranches(scopedBranches);
+          if (!selectedBranchId && scopedBranches.length === 1) {
+            setSelectedBranchId(scopedBranches[0].id);
+          }
+          return;
+        }
+
+        if (!currentUser.branchId) {
+          setError("Your account is missing a Branch scope.");
+        }
+      } catch (apiError) {
+        if (!isMounted) return;
+        setError(apiError instanceof Error ? apiError.message : "Unable to load Lead scope.");
+      } finally {
+        if (isMounted) setIsScopeLoading(false);
+      }
     }
-  };
 
-  const reloadLeadDetails = async (leadId: string) => {
-    if (!token) return;
-    const [freshLead, leadFollowUps] = await Promise.all([
-      getLead(token, leadId),
-      getLeadFollowUps(token, leadId),
-    ]);
-    setDetailLead(freshLead);
-    setFollowUps(leadFollowUps);
-    await loadLeads();
-  };
+    const timeout = window.setTimeout(() => {
+      void loadScope();
+    }, 0);
 
-  const addFollowUp = async () => {
-    if (!token || !detailLead || !followUpForm.scheduledAt) return;
+    return () => {
+      isMounted = false;
+      window.clearTimeout(timeout);
+    };
+  }, [selectedBranchId, selectedOrganizationId, token, user]);
 
-    setIsSaving(true);
+  useEffect(() => {
+    if (!token || !user || user.role !== "CRM_OWNER") return;
+    const organizationId = selectedOrganizationId;
+    let isMounted = true;
+
+    const timeout = window.setTimeout(() => {
+      setBranches([]);
+      setSelectedBranchId("");
+
+      if (!organizationId) {
+        setIsScopeLoading(false);
+        return;
+      }
+
+      void loadBranchesForOrganization();
+    }, 0);
+
+    async function loadBranchesForOrganization() {
+      setIsScopeLoading(true);
+      try {
+        const scopedBranches = await getBranches(token, {
+          limit: 100,
+          organizationId,
+          status: "ACTIVE",
+        });
+        if (!isMounted) return;
+        setBranches(scopedBranches);
+        if (scopedBranches.length === 1) {
+          setSelectedBranchId(scopedBranches[0].id);
+        }
+      } catch (apiError) {
+        if (isMounted) {
+          setError(apiError instanceof Error ? apiError.message : "Unable to load Branches.");
+        }
+      } finally {
+        if (isMounted) setIsScopeLoading(false);
+      }
+    }
+
+    return () => {
+      isMounted = false;
+      window.clearTimeout(timeout);
+    };
+  }, [selectedOrganizationId, token, user]);
+
+  const loadMetadata = useCallback(async () => {
+    if (!token || !user || !canUseLeads || !effectiveBranchId) return;
+    setIsMetadataLoading(true);
+    setMetadataWarning("");
+
     try {
-      await addLeadFollowUp(token, detailLead.id, {
-        note: followUpForm.note.trim() || undefined,
-        outcome: followUpForm.outcome,
-        scheduledAt: new Date(followUpForm.scheduledAt).toISOString(),
+      const [programData, goalData, batchData] = await Promise.all([
+        getPrograms(token),
+        getGoals(token),
+        getBatches(token),
+      ]);
+      setPrograms(programData);
+      setGoals(goalData);
+      setBatches(batchData);
+
+      try {
+        const options = await loadAssignees(token, user, effectiveBranchId);
+        setAssignees(options);
+      } catch {
+        setAssignees(selfAssigneeOption(user, effectiveBranchId));
+        setMetadataWarning("Assignment options are limited for this Branch.");
+      }
+    } catch (apiError) {
+      setMetadataWarning(
+        apiError instanceof Error ? apiError.message : "Unable to load Lead metadata.",
+      );
+    } finally {
+      setIsMetadataLoading(false);
+    }
+  }, [canUseLeads, effectiveBranchId, token, user]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void loadMetadata();
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [loadMetadata]);
+
+  const loadLeadList = useCallback(async () => {
+    if (!token || !user || !canRequestLeads) {
+      setLeads([]);
+      setMeta({ limit: pageSize, page: 1, total: 0, totalPages: 1 });
+      return;
+    }
+
+    setIsListLoading(true);
+    setError("");
+    try {
+      const result = await listLeads(token, {
+        assignedUserId: filters.assignedUserId || undefined,
+        branchId: effectiveBranchId,
+        createdFrom: dateFilterValue(filters.createdFrom, "start"),
+        createdTo: dateFilterValue(filters.createdTo, "end"),
+        followUpFrom: dateFilterValue(filters.followUpFrom, "start"),
+        followUpTo: dateFilterValue(filters.followUpTo, "end"),
+        organizationId:
+          user.role === "CRM_OWNER" ? effectiveOrganizationId : undefined,
+        page,
+        limit: pageSize,
+        programId: filters.programId || undefined,
+        search: debouncedSearch || undefined,
+        source: filters.source || undefined,
+        stage: filters.stage || undefined,
+        status: filters.status || undefined,
       });
-      setFollowUpForm({ note: "", outcome: "PENDING", scheduledAt: "" });
-      await reloadLeadDetails(detailLead.id);
-      setNotice("Follow-up added.");
+      setLeads(result.data);
+      setMeta(result.meta);
     } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Unable to add follow-up.");
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setError(apiError instanceof Error ? apiError.message : "Unable to load Leads.");
+      setLeads([]);
     } finally {
-      setIsSaving(false);
+      setIsListLoading(false);
     }
-  };
+  }, [
+    canRequestLeads,
+    debouncedSearch,
+    effectiveBranchId,
+    effectiveOrganizationId,
+    filters.assignedUserId,
+    filters.createdFrom,
+    filters.createdTo,
+    filters.followUpFrom,
+    filters.followUpTo,
+    filters.programId,
+    filters.source,
+    filters.stage,
+    filters.status,
+    page,
+    router,
+    token,
+    user,
+  ]);
 
-  const markLost = async () => {
-    if (!token || !detailLead) return;
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void loadLeadList();
+    }, 0);
 
-    setIsSaving(true);
-    try {
-      await markLeadLost(token, detailLead.id, lostRemark || undefined);
-      setLostRemark("");
-      await reloadLeadDetails(detailLead.id);
-      setNotice("Lead marked lost.");
-    } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Unable to mark lead lost.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
+    return () => window.clearTimeout(timeout);
+  }, [loadLeadList]);
 
-  const reEngage = async () => {
-    if (!token || !detailLead) return;
-
-    setIsSaving(true);
-    try {
-      await reEngageLead(token, detailLead.id);
-      await reloadLeadDetails(detailLead.id);
-      setNotice("Lead re-engaged.");
-    } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Unable to re-engage lead.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const convertLead = async () => {
-    if (!token || !detailLead) return;
-
-    setIsSaving(true);
-    try {
-      await convertLeadToMember(token, detailLead.id, {
-        email: `${detailLead.name.toLowerCase().replace(/\s+/g, ".")}@evolve.test`,
-      });
-      setDetailLead(null);
-      await loadLeads();
-      setNotice("Lead converted to member.");
-    } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Unable to convert lead.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const removeLead = async () => {
-    if (!token || !leadToDelete) return;
-
-    setIsSaving(true);
-    try {
-      await deleteLead(token, leadToDelete.id);
-      setLeadToDelete(null);
-      setDetailLead(null);
-      await loadLeads();
-      setNotice("Lead deleted.");
-    } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Unable to delete lead.");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  function clearFilters() {
-    setCreated("ALL");
-    setSource("");
-    setProgramId("");
-    setStatus("");
-    setBatchId("");
+  function resetFilters() {
     setSearch("");
+    setFilters(emptyFilters);
+  }
+
+  function openCreateDialog() {
+    setForm(emptyForm);
+    setFormError("");
+    setPhoneConflict(null);
+    setIsCreateOpen(true);
+  }
+
+  async function submitLead(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !effectiveBranchId) return;
+
+    setIsSaving(true);
+    setFormError("");
+    setPhoneConflict(null);
+    try {
+      const payload = buildCreatePayload(form, branchBatches, activePrograms, activeGoals);
+      await createLeadForBranch(token, effectiveBranchId, payload);
+      setNotice("Lead created.");
+      setIsCreateOpen(false);
+      setForm(emptyForm);
+      await loadLeadList();
+    } catch (apiError) {
+      if (apiError instanceof LeadPhoneConflictError) {
+        setPhoneConflict(apiError);
+        setFormError("");
+      } else {
+        setFormError(apiError instanceof Error ? apiError.message : "Unable to create Lead.");
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  function locateConflict() {
+    const existingLead = phoneConflict?.existingLead;
+    setSearch(existingLead?.primaryPhone || existingLead?.fullName || form.primaryPhone);
+    setFilters((current) => ({ ...current, stage: "", status: "", source: "" }));
+    setIsCreateOpen(false);
+  }
+
+  if (user?.role === "LEAD_CALLER") {
+    return (
+      <AppShell user={user}>
+        <Card className="p-[var(--card-padding)]">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="mt-1 size-[var(--icon-md)] text-[var(--color-danger)]" />
+            <div>
+              <h1 className="text-xl font-bold text-[var(--color-text)]">
+                Lead Management is not available
+              </h1>
+              <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+                Your role can work from assigned calling flows, but does not have access to the Lead list.
+              </p>
+            </div>
+          </div>
+        </Card>
+      </AppShell>
+    );
   }
 
   return (
     <AppShell user={user}>
-      <div className="grid gap-[var(--section-gap)]">
-        <PageTop
-          onNewLead={openCreateDialog}
-          onSearchChange={setSearch}
-          search={search}
+      <div className="space-y-[var(--space-6)]">
+        <PageHeader
+          title="Leads"
+          description="Review scoped Lead records and create new Branch Leads."
+          actions={
+            <Button
+              className="gap-2"
+              disabled={!canRequestLeads}
+              onClick={openCreateDialog}
+            >
+              <Plus className="size-[var(--icon-sm)]" />
+              New Lead
+            </Button>
+          }
         />
 
-        <Card className="overflow-hidden rounded-none border-x-0 border-t-0 shadow-none">
-          <div className="flex min-h-13 gap-[var(--space-6)] overflow-x-auto px-[var(--space-2)]">
-            {stageTabs.map((tab) => {
-              const isActive = activeStage === tab.stage;
-              return (
-                <button
-                  className={cn(
-                    "flex shrink-0 items-center gap-2 border-b-2 border-transparent px-2 text-sm font-bold text-[var(--color-text)]",
-                    isActive && "border-[var(--color-primary)] text-[var(--color-primary)]",
-                  )}
-                  key={tab.stage}
-                  onClick={() => setActiveStage(tab.stage)}
-                  type="button"
+        <ScopePanel
+          branches={branches}
+          effectiveBranchId={effectiveBranchId}
+          isLoading={isScopeLoading}
+          organizations={organizations}
+          selectedBranch={selectedBranch}
+          selectedBranchId={selectedBranchId}
+          selectedOrganization={selectedOrganization}
+          selectedOrganizationId={selectedOrganizationId}
+          setSelectedBranchId={setSelectedBranchId}
+          setSelectedOrganizationId={setSelectedOrganizationId}
+          user={user}
+        />
+
+        {notice ? (
+          <Alert tone="success" onDismiss={() => setNotice("")}>
+            {notice}
+          </Alert>
+        ) : null}
+        {error ? (
+          <Alert tone="danger" onDismiss={() => setError("")}>
+            {error}
+          </Alert>
+        ) : null}
+        {metadataWarning ? (
+          <Alert tone="warning" onDismiss={() => setMetadataWarning("")}>
+            {metadataWarning}
+          </Alert>
+        ) : null}
+
+        <Card className="p-[var(--card-padding)]">
+          <div className="flex flex-col gap-[var(--space-4)]">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <label className="relative flex min-w-0 flex-1 items-center">
+                <Search className="pointer-events-none absolute left-4 size-[var(--icon-sm)] text-[var(--color-text-muted)]" />
+                <input
+                  className="h-[var(--control-height-lg)] w-full rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] pl-11 pr-4 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search name, phone, email, summary"
+                  type="search"
+                  value={search}
+                />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <FilterSelect
+                  active={Boolean(filters.stage)}
+                  icon={Filter}
+                  label={filters.stage ? labelFor(leadStages, filters.stage) : "Stage"}
+                  onChange={(event) =>
+                    setFilters((current) => ({
+                      ...current,
+                      stage: event.target.value as LeadStage | "",
+                    }))
+                  }
+                  options={[{ label: "All stages", value: "" }, ...leadStages]}
+                  value={filters.stage}
+                />
+                <FilterSelect
+                  active={Boolean(filters.status)}
+                  icon={Filter}
+                  label={filters.status ? labelFor(leadStatuses, filters.status) : "Status"}
+                  onChange={(event) =>
+                    setFilters((current) => ({
+                      ...current,
+                      status: event.target.value as LeadStatus | "",
+                    }))
+                  }
+                  options={[{ label: "All statuses", value: "" }, ...leadStatuses]}
+                  value={filters.status}
+                />
+                <FilterSelect
+                  active={Boolean(filters.source)}
+                  icon={Filter}
+                  label={filters.source ? labelFor(leadSources, filters.source) : "Source"}
+                  onChange={(event) =>
+                    setFilters((current) => ({
+                      ...current,
+                      source: event.target.value as LeadSource | "",
+                    }))
+                  }
+                  options={[{ label: "All sources", value: "" }, ...leadSources]}
+                  value={filters.source}
+                />
+                <FilterSelect
+                  active={Boolean(filters.programId)}
+                  icon={SlidersHorizontal}
+                  label={
+                    filters.programId
+                      ? activePrograms.find((program) => program.id === filters.programId)?.name ?? "Program"
+                      : "Program"
+                  }
+                  onChange={(event) =>
+                    setFilters((current) => ({
+                      ...current,
+                      programId: event.target.value,
+                    }))
+                  }
+                  options={[
+                    { label: "All programs", value: "" },
+                    ...activePrograms.map((program) => ({
+                      label: program.name,
+                      value: program.id,
+                    })),
+                  ]}
+                  value={filters.programId}
+                />
+                <Button className="gap-2" onClick={resetFilters} variant="secondary">
+                  <RefreshCw className="size-[var(--icon-sm)]" />
+                  Reset
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+              <Input
+                label="Created from"
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, createdFrom: event.target.value }))
+                }
+                type="date"
+                value={filters.createdFrom}
+              />
+              <Input
+                label="Created to"
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, createdTo: event.target.value }))
+                }
+                type="date"
+                value={filters.createdTo}
+              />
+              <Input
+                label="Follow-up from"
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, followUpFrom: event.target.value }))
+                }
+                type="date"
+                value={filters.followUpFrom}
+              />
+              <Input
+                label="Follow-up to"
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, followUpTo: event.target.value }))
+                }
+                type="date"
+                value={filters.followUpTo}
+              />
+              <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+                <span>Assigned to</span>
+                <select
+                  className="h-[var(--control-height-lg)] rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] text-sm shadow-[var(--shadow-xs)] outline-none focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+                  onChange={(event) =>
+                    setFilters((current) => ({
+                      ...current,
+                      assignedUserId: event.target.value,
+                    }))
+                  }
+                  value={filters.assignedUserId}
                 >
-                  {tab.label}
-                  <span className="rounded-[var(--radius-full)] bg-[var(--color-surface-muted)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">
-                    {stageCounts[tab.stage] ?? 0}
-                  </span>
-                </button>
-              );
-            })}
+                  <option value="">Anyone</option>
+                  {assignees.map((assignee) => (
+                    <option key={assignee.id} value={assignee.id}>
+                      {assignee.name} ({formatEnum(assignee.role)})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
         </Card>
 
-        <div className="flex flex-col gap-[var(--space-3)] border-b border-[var(--color-divider)] pb-[var(--space-4)] xl:flex-row xl:items-center">
-          <span className="text-sm font-medium text-[var(--color-text-secondary)]">
-            Created on
-          </span>
-          <FilterSelect
-            active={created !== "ALL"}
-            icon={Calendar}
-            label={createdOptions.find((option) => option.value === created)?.label ?? "All Time"}
-            onChange={(event) => setCreated(event.target.value as CreatedRange)}
-            options={createdOptions}
-            value={created}
-          />
-          <div className="hidden h-6 w-px bg-[var(--color-divider)] xl:block" />
-          <FilterSelect
-            active={Boolean(source)}
-            label={source ? formatEnum(source) : "Source"}
-            onChange={(event) => setSource(event.target.value as LeadSource | "")}
-            options={sourceOptions}
-            value={source}
-          />
-          <FilterSelect
-            active={Boolean(programId)}
-            label={programs.find((program) => program.id === programId)?.name ?? "Interest"}
-            onChange={(event) => setProgramId(event.target.value)}
-            options={[
-              { label: "All Interests", value: "" },
-              ...programs.map((program) => ({ label: program.name, value: program.id })),
-            ]}
-            value={programId}
-          />
-          <FilterSelect
-            active={Boolean(status)}
-            label={status ? formatLeadStatus(status) : "Status"}
-            onChange={(event) => setStatus(event.target.value as LeadStatus | "")}
-            options={statusOptions}
-            value={status}
-          />
-          <FilterSelect
-            active={Boolean(batchId)}
-            label={batches.find((batch) => batch.id === batchId)?.name ?? "Batch Time"}
-            onChange={(event) => setBatchId(event.target.value)}
-            options={[
-              { label: "All Batch Times", value: "" },
-              ...batches.map((batch) => ({ label: batch.name, value: batch.id })),
-            ]}
-            value={batchId}
-          />
-          <div className="ml-auto flex flex-wrap gap-[var(--space-3)]">
-            <FilterButton icon={Filter}>More Filters</FilterButton>
-            <FilterButton icon={Bookmark}>Saved Views</FilterButton>
-            <button
-              className="inline-flex h-[var(--control-height-md)] items-center gap-2 rounded-[var(--control-radius)] px-3 text-sm font-bold text-[var(--color-primary)] hover:bg-[var(--color-primary-subtle)]"
-              onClick={clearFilters}
-              type="button"
+        <Card className="overflow-hidden">
+          <div className="flex flex-col gap-3 border-b border-[var(--color-divider)] px-[var(--space-5)] py-[var(--space-4)] md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-sm font-bold text-[var(--color-text)]">
+                Scoped Lead list
+              </p>
+              <p className="text-xs text-[var(--color-text-secondary)]">
+                {canRequestLeads
+                  ? `${meta.total} total records from backend metadata`
+                  : "Select a valid scope to load Leads."}
+              </p>
+            </div>
+            <Button
+              className="gap-2"
+              disabled={!canRequestLeads || isListLoading}
+              onClick={() => void loadLeadList()}
+              variant="secondary"
             >
-              <RotateCcw className="size-[var(--icon-sm)]" />
-              Clear filters
-            </button>
+              {isListLoading ? (
+                <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+              ) : (
+                <RefreshCw className="size-[var(--icon-sm)]" />
+              )}
+              Refresh
+            </Button>
           </div>
-        </div>
 
-        <div className="flex flex-col gap-[var(--space-3)] md:flex-row md:items-center md:justify-between">
-          <p className="text-sm font-medium text-[var(--color-text-secondary)]">
-            <span className="font-bold text-[var(--color-text)]">
-              {isLoading ? "Loading" : visibleLeads.length}
-            </span>{" "}
-            {isLoading ? "leads..." : "leads found"}
-            {!isLoading ? (
-              <span className="ml-[var(--space-5)] font-bold text-[var(--color-danger)]">
-                {overdueCount} overdue follow-ups
-              </span>
-            ) : null}
-          </p>
-          <div className="flex items-center gap-[var(--space-3)]">
-            <span className="text-xs font-medium text-[var(--color-text-muted)]">Sort by</span>
-            <FilterSelect
-              label={sort === "FOLLOW_UP_DATE" ? "Follow-up date" : "Recently Added"}
-              onChange={(event) => setSort(event.target.value)}
-              options={[
-                { label: "Follow-up date", value: "FOLLOW_UP_DATE" },
-                { label: "Recently Added", value: "RECENTLY_ADDED" },
-              ]}
-              value={sort}
-            />
-          </div>
-        </div>
+          <LeadTable
+            isLoading={isListLoading}
+            leads={leads}
+            metadataLoading={isMetadataLoading}
+          />
 
-        {notice ? (
-          <Card className="border-[var(--color-success-border)] bg-[var(--color-success-surface)] p-[var(--space-4)] text-sm font-medium text-[var(--color-success)]">
-            {notice}
-          </Card>
-        ) : null}
-
-        {error ? (
-          <Card className="border-[var(--color-danger-border)] bg-[var(--color-danger-surface)] p-[var(--space-4)] text-sm font-medium text-[var(--color-danger)]">
-            {error}
-          </Card>
-        ) : null}
-
-        <LeadsTable
-          isLoading={isLoading}
-          leads={visibleLeads}
-          onDelete={setLeadToDelete}
-          onEdit={openEditDialog}
-          onOpen={openLeadDetails}
-        />
+          <Pagination meta={meta} onPageChange={setPage} />
+        </Card>
       </div>
 
-      <LeadFormDialog
-        batches={batches}
-        form={leadForm}
-        isOpen={leadDialogMode !== null}
-        isSaving={isSaving}
-        mode={leadDialogMode ?? "create"}
-        onChange={setLeadForm}
-        onClose={() => setLeadDialogMode(null)}
-        onSave={saveLead}
-        programs={programs}
-        staff={staff}
-      />
+      <Dialog
+        className="max-w-5xl"
+        isOpen={isCreateOpen}
+        onClose={() => setIsCreateOpen(false)}
+        title="New Lead"
+      >
+        <form className="space-y-[var(--space-5)]" onSubmit={submitLead}>
+          {formError ? (
+            <Alert tone="danger" onDismiss={() => setFormError("")}>
+              {formError}
+            </Alert>
+          ) : null}
+          {phoneConflict ? (
+            <ConflictPanel conflict={phoneConflict} onLocate={locateConflict} />
+          ) : null}
 
-      <LeadDetailDialog
-        followUpForm={followUpForm}
-        followUps={followUps}
-        isOpen={Boolean(detailLead)}
-        isSaving={isSaving}
-        lead={detailLead}
-        lostRemark={lostRemark}
-        onAddFollowUp={addFollowUp}
-        onClose={() => setDetailLead(null)}
-        onConvert={convertLead}
-        onDelete={(lead) => setLeadToDelete(lead)}
-        onEdit={openEditDialog}
-        onFollowUpChange={setFollowUpForm}
-        onLostRemarkChange={setLostRemark}
-        onMarkLost={markLost}
-        onReEngage={reEngage}
-      />
+          <div className="grid gap-4 md:grid-cols-2">
+            <Input
+              label="Full name"
+              onChange={(event) => setForm((current) => ({ ...current, fullName: event.target.value }))}
+              required
+              value={form.fullName}
+            />
+            <Input
+              hint="10 digit Indian mobile numbers are saved as +91 format."
+              label="Primary phone"
+              onChange={(event) => setForm((current) => ({ ...current, primaryPhone: event.target.value }))}
+              required
+              value={form.primaryPhone}
+            />
+            <Input
+              label="Alternate phone"
+              onChange={(event) => setForm((current) => ({ ...current, alternatePhone: event.target.value }))}
+              value={form.alternatePhone}
+            />
+            <Input
+              label="Email"
+              onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
+              type="email"
+              value={form.email}
+            />
+            <Input
+              label="Date of birth"
+              onChange={(event) => setForm((current) => ({ ...current, dob: event.target.value }))}
+              type="date"
+              value={form.dob}
+            />
+            <SelectField
+              label="Source"
+              onChange={(value) => setForm((current) => ({ ...current, source: value as LeadSource }))}
+              options={leadSources}
+              required
+              value={form.source}
+            />
+            <SelectField
+              label="Preferred channel"
+              onChange={(value) =>
+                setForm((current) => ({
+                  ...current,
+                  preferredChannel: value as LeadCommunicationChannel | "",
+                }))
+              }
+              options={[{ label: "No preference", value: "" }, ...preferredChannels]}
+              value={form.preferredChannel}
+            />
+            <SelectField
+              label="Intent"
+              onChange={(value) => setForm((current) => ({ ...current, currentIntent: value as LeadCurrentIntent }))}
+              options={leadIntentOptions}
+              value={form.currentIntent}
+            />
+            <SelectField
+              label="Batch type preference"
+              onChange={(value) =>
+                setForm((current) => ({
+                  ...current,
+                  batchTypePref: value as BatchTypePref | "",
+                }))
+              }
+              options={[{ label: "No preference", value: "" }, ...batchTypeOptions]}
+              value={form.batchTypePref}
+            />
+            <SelectField
+              label="Preferred batch"
+              onChange={(value) => setForm((current) => ({ ...current, preferredBatchId: value }))}
+              options={[
+                { label: "No preferred batch", value: "" },
+                ...branchBatches.map((batch) => ({
+                  label: `${batch.name} (${timeRange(batch)})`,
+                  value: batch.id,
+                })),
+              ]}
+              value={form.preferredBatchId}
+            />
+            <SelectField
+              label="Assign to"
+              onChange={(value) => setForm((current) => ({ ...current, assignedUserId: value }))}
+              options={[
+                { label: "Unassigned", value: "" },
+                ...assignees.map((assignee) => ({
+                  label: `${assignee.name} (${formatEnum(assignee.role)})`,
+                  value: assignee.id,
+                })),
+              ]}
+              value={form.assignedUserId}
+            />
+            <Input
+              label="Source details"
+              onChange={(event) => setForm((current) => ({ ...current, sourceDetails: event.target.value }))}
+              value={form.sourceDetails}
+            />
+          </div>
 
-      <ConfirmDialog
-        isOpen={Boolean(leadToDelete)}
-        isSaving={isSaving}
-        message={`Delete ${leadToDelete?.name ?? "this lead"}? This cannot be undone.`}
-        onClose={() => setLeadToDelete(null)}
-        onConfirm={removeLead}
-        title="Delete Lead"
-      />
+          <div className="grid gap-4 md:grid-cols-2">
+            <MultiSelect
+              label="Programs"
+              onChange={(programIds) => setForm((current) => ({ ...current, programIds }))}
+              options={activePrograms.map((program) => ({
+                label: program.name,
+                value: program.id,
+              }))}
+              values={form.programIds}
+            />
+            <MultiSelect
+              label="Goals"
+              onChange={(goalIds) => setForm((current) => ({ ...current, goalIds }))}
+              options={activeGoals.map((goal) => ({
+                label: goal.name,
+                value: goal.id,
+              }))}
+              values={form.goalIds}
+            />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-[1fr_12rem_12rem]">
+            <DayPicker
+              onChange={(preferredDays) => setForm((current) => ({ ...current, preferredDays }))}
+              values={form.preferredDays}
+            />
+            <Input
+              label="Start time"
+              onChange={(event) => setForm((current) => ({ ...current, preferredStartTime: event.target.value }))}
+              type="time"
+              value={form.preferredStartTime}
+            />
+            <Input
+              label="End time"
+              onChange={(event) => setForm((current) => ({ ...current, preferredEndTime: event.target.value }))}
+              type="time"
+              value={form.preferredEndTime}
+            />
+          </div>
+
+          <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+            <span>Current summary</span>
+            <textarea
+              className="min-h-24 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-disabled)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+              onChange={(event) => setForm((current) => ({ ...current, currentSummary: event.target.value }))}
+              value={form.currentSummary}
+            />
+          </label>
+
+          <div className="flex justify-end gap-3 border-t border-[var(--color-divider)] pt-[var(--space-4)]">
+            <Button onClick={() => setIsCreateOpen(false)} type="button" variant="secondary">
+              Cancel
+            </Button>
+            <Button className="gap-2" disabled={isSaving || !canRequestLeads} type="submit">
+              {isSaving ? (
+                <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+              ) : (
+                <UserPlus className="size-[var(--icon-sm)]" />
+              )}
+              Create Lead
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </AppShell>
   );
 }
 
-function PageTop({
-  onNewLead,
-  onSearchChange,
-  search,
-}: {
-  onNewLead: () => void;
-  onSearchChange: (value: string) => void;
-  search: string;
-}) {
-  return (
-    <div className="flex flex-col gap-[var(--space-4)] border-b border-[var(--color-divider)] pb-[var(--space-5)] xl:flex-row xl:items-start xl:justify-between">
-      <div>
-        <h1 className="text-2xl font-bold leading-tight text-[var(--color-text)]">
-          Enquiry Leads
-        </h1>
-        <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-          Manage enquiries, follow-ups and customer conversions.
-        </p>
-      </div>
-      <div className="flex flex-col gap-[var(--space-3)] md:flex-row">
-        <label className="relative h-[var(--control-height-lg)] min-w-[20rem]">
-          <Search className="pointer-events-none absolute left-4 top-1/2 size-[var(--icon-sm)] -translate-y-1/2 text-[var(--color-text-muted)]" />
-          <input
-            className="h-full w-full rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] pl-11 pr-[var(--control-padding-x)] text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
-            onChange={(event) => onSearchChange(event.target.value)}
-            placeholder="Search leads — name, phone, email, ID"
-            type="search"
-            value={search}
-          />
-        </label>
-        <Button className="gap-2" onClick={onNewLead}>
-          <Plus className="size-[var(--icon-sm)]" />
-          New Lead
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function LeadsTable({
+function ScopePanel({
+  branches,
+  effectiveBranchId,
   isLoading,
-  leads,
-  onDelete,
-  onEdit,
-  onOpen,
+  organizations,
+  selectedBranch,
+  selectedBranchId,
+  selectedOrganization,
+  selectedOrganizationId,
+  setSelectedBranchId,
+  setSelectedOrganizationId,
+  user,
 }: {
+  branches: Branch[];
+  effectiveBranchId: string;
   isLoading: boolean;
-  leads: Lead[];
-  onDelete: (lead: Lead) => void;
-  onEdit: (lead: Lead) => void;
-  onOpen: (lead: Lead) => void;
+  organizations: Organization[];
+  selectedBranch: Branch | undefined;
+  selectedBranchId: string;
+  selectedOrganization: Organization | undefined;
+  selectedOrganizationId: string;
+  setSelectedBranchId: (branchId: string) => void;
+  setSelectedOrganizationId: (organizationId: string) => void;
+  user: AuthUser | null;
 }) {
-  const groups: LeadGroup[] = ["OVERDUE", "TODAY", "UPCOMING"];
+  const role = user?.role;
 
   return (
-    <Card className="overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[78rem] border-collapse text-left text-sm">
-          <thead className="h-[var(--table-header-height)] bg-[var(--table-header-background)] text-xs font-bold text-[var(--color-text)]">
-            <tr>
-              <th className="w-12 px-[var(--table-cell-padding-x)]">
-                <input aria-label="Select all leads" type="checkbox" />
-              </th>
-              {["Lead", "Created on", "Source", "Interest", "Batch time", "Status", "Next follow-up", "Owner", "Actions"].map((heading) => (
-                <th className="px-[var(--table-cell-padding-x)]" key={heading}>
-                  {heading}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--color-divider)]">
-            {isLoading ? (
-              <tr>
-                <td className="h-32 text-center text-[var(--color-text-muted)]" colSpan={10}>
-                  Loading leads...
-                </td>
-              </tr>
-            ) : leads.length === 0 ? (
-              <tr>
-                <td className="h-32 text-center text-[var(--color-text-muted)]" colSpan={10}>
-                  No leads match the current filters.
-                </td>
-              </tr>
-            ) : (
-              groups.map((group) => {
-                const groupLeads = leads.filter((lead) => groupLead(lead) === group);
-                if (groupLeads.length === 0) return null;
-                return (
-                  <LeadGroupRows
-                    group={group}
-                    key={group}
-                    leads={groupLeads}
-                    onDelete={onDelete}
-                    onEdit={onEdit}
-                    onOpen={onOpen}
-                  />
-                );
-              })
-            )}
-          </tbody>
-        </table>
+    <Card className="p-[var(--card-padding)]">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-sm font-bold text-[var(--color-text)]">
+            Lead scope
+          </p>
+          <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+            {scopeDescription(role)}
+          </p>
+        </div>
+        {isLoading ? (
+          <div className="inline-flex items-center gap-2 text-sm font-semibold text-[var(--color-text-secondary)]">
+            <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+            Loading scope
+          </div>
+        ) : null}
+        <div className="grid min-w-0 flex-1 gap-3 md:grid-cols-2 lg:max-w-3xl">
+          {role === "CRM_OWNER" ? (
+            <SelectField
+              label="Organization"
+              onChange={(value) => {
+                setSelectedOrganizationId(value);
+                setSelectedBranchId("");
+              }}
+              options={[
+                { label: "Select organization", value: "" },
+                ...organizations.map((organization) => ({
+                  label: organization.name,
+                  value: organization.id,
+                })),
+              ]}
+              value={selectedOrganizationId}
+            />
+          ) : (
+            <ScopeValue
+              label="Organization"
+              value={selectedOrganization?.name || user?.organizationId || "Assigned organization"}
+            />
+          )}
+
+          {role === "CRM_OWNER" || role === "ORGANIZATION_OWNER" ? (
+            <SelectField
+              disabled={role === "CRM_OWNER" && !selectedOrganizationId}
+              label="Branch"
+              onChange={setSelectedBranchId}
+              options={[
+                { label: "Select branch", value: "" },
+                ...branches.map((branch) => ({
+                  label: branch.name,
+                  value: branch.id,
+                })),
+              ]}
+              value={selectedBranchId}
+            />
+          ) : (
+            <ScopeValue
+              label="Branch"
+              value={selectedBranch?.name || shortId(effectiveBranchId) || "Assigned branch"}
+            />
+          )}
+        </div>
       </div>
     </Card>
   );
 }
 
-function LeadGroupRows({
-  group,
+function LeadTable({
+  isLoading,
   leads,
-  onDelete,
-  onEdit,
-  onOpen,
+  metadataLoading,
 }: {
-  group: LeadGroup;
-  leads: Lead[];
-  onDelete: (lead: Lead) => void;
-  onEdit: (lead: Lead) => void;
-  onOpen: (lead: Lead) => void;
+  isLoading: boolean;
+  leads: LeadSummary[];
+  metadataLoading: boolean;
 }) {
-  const meta = groupMeta[group];
+  if (isLoading) {
+    return (
+      <div className="grid min-h-80 place-items-center px-[var(--space-5)] py-[var(--space-8)]">
+        <div className="flex items-center gap-3 text-sm font-semibold text-[var(--color-text-secondary)]">
+          <Loader2 className="size-[var(--icon-md)] animate-spin text-[var(--color-primary)]" />
+          Loading Leads
+        </div>
+      </div>
+    );
+  }
+
+  if (!leads.length) {
+    return (
+      <div className="grid min-h-80 place-items-center px-[var(--space-5)] py-[var(--space-8)] text-center">
+        <div>
+          <p className="text-sm font-bold text-[var(--color-text)]">
+            No Leads found
+          </p>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            Adjust the filters or create a Lead in the selected Branch.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <>
-      <tr className={cn("h-10 text-xs font-bold uppercase", meta.tone)}>
-        <td colSpan={10} className="px-[var(--table-cell-padding-x)]">
-          <div className="flex items-center gap-2">
-            <ChevronDown className="size-4" />
-            {meta.label}
-            <span className="rounded-[var(--radius-full)] bg-white/70 px-2 py-0.5 text-xs">
-              {leads.length}
-            </span>
-          </div>
-        </td>
-      </tr>
-      {leads.map((lead) => (
-        <tr className="h-[var(--table-row-height)] hover:bg-[var(--table-row-hover)]" key={lead.id}>
-          <td className="px-[var(--table-cell-padding-x)]">
-            <input aria-label={`Select ${lead.name}`} type="checkbox" />
-          </td>
-          <td className="px-[var(--table-cell-padding-x)]">
-            <button
-              className="flex items-center gap-[var(--space-3)] text-left"
-              onClick={() => onOpen(lead)}
-              type="button"
-            >
-              <InitialAvatar name={lead.name} tone={avatarTone(lead.name)} />
-              <div>
-                <p className="font-semibold text-[var(--color-text)]">{lead.name}</p>
-                <p className="text-xs text-[var(--color-text-secondary)]">{lead.phone}</p>
-              </div>
-            </button>
-          </td>
-          <td className="px-[var(--table-cell-padding-x)] text-[var(--color-text)]">{formatDate(lead.createdAt)}</td>
-          <td className="px-[var(--table-cell-padding-x)] text-[var(--color-text)]">{formatEnum(lead.source)}</td>
-          <td className="px-[var(--table-cell-padding-x)] text-[var(--color-text)]">{formatInterest(lead)}</td>
-          <td className="px-[var(--table-cell-padding-x)] text-[var(--color-text-secondary)]">{lead.preferredBatch?.name ?? "—"}</td>
-          <td className="px-[var(--table-cell-padding-x)]">
-            <StatusBadge status={leadStatusTone(lead)}>
-              {lead.stage === "TRIAL_SCHEDULED" ? "Trial Scheduled" : formatLeadStatus(lead.status)}
-            </StatusBadge>
-          </td>
-          <td className={cn(
-            "px-[var(--table-cell-padding-x)]",
-            group === "OVERDUE" ? "font-semibold text-[var(--color-danger)]" : "text-[var(--color-text)]",
-          )}>
-            {formatDate(lead.nextFollowUpAt)}
-          </td>
-          <td className="px-[var(--table-cell-padding-x)]">
-            <InitialAvatar className="size-8" name={lead.assignedStaff?.fullName ?? "AV"} tone={avatarTone(lead.assignedStaff?.fullName ?? "AV")} />
-          </td>
-          <td className="px-[var(--table-cell-padding-x)]">
-            <div className="flex items-center gap-2">
-              <ActionButton label={`Call ${lead.name}`} icon={Phone} />
-              <ActionButton label={`WhatsApp ${lead.name}`} icon={MessageCircle} tone="success" />
-              <button
-                aria-label={`Edit ${lead.name}`}
-                className="grid size-8 place-items-center rounded-[var(--radius-md)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-muted)]"
-                onClick={() => onEdit(lead)}
-                type="button"
-              >
-                <MoreVertical className="size-[var(--icon-sm)]" />
-              </button>
-              <button
-                className="rounded-[var(--radius-md)] px-2 py-1 text-xs font-bold text-[var(--color-danger)] hover:bg-[var(--color-danger-surface)]"
-                onClick={() => onDelete(lead)}
-                type="button"
-              >
-                Delete
-              </button>
-            </div>
-          </td>
-        </tr>
-      ))}
-    </>
-  );
-}
-
-function LeadFormDialog({
-  batches,
-  form,
-  isOpen,
-  isSaving,
-  mode,
-  onChange,
-  onClose,
-  onSave,
-  programs,
-  staff,
-}: {
-  batches: Batch[];
-  form: LeadFormState;
-  isOpen: boolean;
-  isSaving: boolean;
-  mode: "create" | "edit";
-  onChange: (form: LeadFormState) => void;
-  onClose: () => void;
-  onSave: () => void;
-  programs: Program[];
-  staff: Staff[];
-}) {
-  return (
-    <Dialog className="max-w-3xl" isOpen={isOpen} onClose={onClose} title={mode === "create" ? "New Lead" : "Edit Lead"}>
-      <div className="grid gap-[var(--space-4)] md:grid-cols-2">
-        <Field label="Name">
-          <Input onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder="Kavya Pillai" value={form.name} />
-        </Field>
-        <Field label="Phone">
-          <Input onChange={(event) => onChange({ ...form, phone: event.target.value })} placeholder="+919955676789" value={form.phone} />
-        </Field>
-        <Field label="DOB">
-          <Input onChange={(event) => onChange({ ...form, dob: event.target.value })} type="date" value={form.dob} />
-        </Field>
-        <Field label="Source">
-          <Select value={form.source} onChange={(value) => onChange({ ...form, source: value as LeadSource })} options={sourceOptions.filter((option) => option.value)} />
-        </Field>
-        <Field label="Interest">
-          <select
-            className="h-[var(--control-height-md)] rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] text-sm outline-none"
-            onChange={(event) => {
-              const next = new Set(form.programIds ?? []);
-              if (event.target.value) next.add(event.target.value);
-              onChange({ ...form, programIds: Array.from(next) });
-            }}
-            value=""
-          >
-            <option value="">Add interest</option>
-            {programs.map((program) => (
-              <option key={program.id} value={program.id}>{program.name}</option>
+    <div className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-[var(--color-divider)] text-left text-sm">
+        <thead className="bg-[var(--color-surface-muted)] text-xs font-bold uppercase text-[var(--color-text-muted)]">
+          <tr>
+            {[
+              "Lead",
+              "Stage",
+              "Status",
+              "Source",
+              "Intent",
+              "Owner",
+              "Next follow-up",
+              "Created",
+            ].map((heading) => (
+              <th className="px-4 py-3" key={heading}>
+                {heading}
+              </th>
             ))}
-          </select>
-        </Field>
-        <Field label="Preferred batch">
-          <Select
-            onChange={(value) => onChange({ ...form, preferredBatchId: value })}
-            options={[{ label: "No batch", value: "" }, ...batches.map((batch) => ({ label: batch.name, value: batch.id }))]}
-            value={form.preferredBatchId ?? ""}
-          />
-        </Field>
-        <Field label="Batch type">
-          <Select
-            onChange={(value) => onChange({ ...form, batchTypePref: value as BatchTypePref })}
-            options={[
-              { label: "Group Batch", value: "GROUP_BATCH" },
-              { label: "Group PT", value: "GROUP_PT" },
-              { label: "Personal Training", value: "PERSONAL_TRAINING" },
-            ]}
-            value={form.batchTypePref ?? "GROUP_BATCH"}
-          />
-        </Field>
-        <Field label="Owner">
-          <Select
-            onChange={(value) => onChange({ ...form, assignedStaffId: value })}
-            options={[{ label: "Unassigned", value: "" }, ...staff.map((person) => ({ label: person.fullName, value: person.id }))]}
-            value={form.assignedStaffId ?? ""}
-          />
-        </Field>
-        {mode === "edit" ? (
-          <>
-            <Field label="Stage">
-              <Select
-                onChange={(value) => onChange({ ...form, stage: value as LeadStage })}
-                options={[
-                  { label: "Enquiry", value: "ENQUIRY" },
-                  { label: "Trial Scheduled", value: "TRIAL_SCHEDULED" },
-                  { label: "Trial Completed", value: "TRIAL_COMPLETED" },
-                  { label: "Converted", value: "CONVERTED" },
-                  { label: "Lost/Declined", value: "LOST_DECLINE" },
-                ]}
-                value={form.stage ?? "ENQUIRY"}
-              />
-            </Field>
-            <Field label="Status">
-              <Select
-                onChange={(value) => onChange({ ...form, status: value as LeadStatus })}
-                options={statusOptions.filter((option) => option.value)}
-                value={form.status ?? "NEW"}
-              />
-            </Field>
-          </>
-        ) : null}
-        <Field label="Next follow-up">
-          <Input
-            onChange={(event) => onChange({ ...form, nextFollowUpAt: event.target.value })}
-            type="datetime-local"
-            value={form.nextFollowUpAt}
-          />
-        </Field>
-        <Field label="Remark">
-          <textarea
-            className="min-h-24 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm outline-none focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)] md:col-span-2"
-            onChange={(event) => onChange({ ...form, remark: event.target.value })}
-            placeholder="Interested in evening batch"
-            value={form.remark}
-          />
-        </Field>
-        <div className="flex flex-wrap gap-2 md:col-span-2">
-          {(form.programIds ?? []).map((programId) => {
-            const program = programs.find((item) => item.id === programId);
-            return (
-              <button
-                className="rounded-[var(--radius-full)] bg-[var(--color-info-surface)] px-3 py-1 text-xs font-bold text-[var(--color-info)]"
-                key={programId}
-                onClick={() => onChange({ ...form, programIds: form.programIds?.filter((id) => id !== programId) })}
-                type="button"
-              >
-                {program?.name ?? programId} ×
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex justify-end gap-[var(--space-3)] md:col-span-2">
-          <Button onClick={onClose} type="button" variant="secondary">Cancel</Button>
-          <Button disabled={isSaving || !form.name || !form.phone} onClick={onSave} type="button">
-            {isSaving ? "Saving..." : "Save Lead"}
-          </Button>
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
-function LeadDetailDialog({
-  followUpForm,
-  followUps,
-  isOpen,
-  isSaving,
-  lead,
-  lostRemark,
-  onAddFollowUp,
-  onClose,
-  onConvert,
-  onDelete,
-  onEdit,
-  onFollowUpChange,
-  onLostRemarkChange,
-  onMarkLost,
-  onReEngage,
-}: {
-  followUpForm: { note: string; outcome: FollowUpOutcome; scheduledAt: string };
-  followUps: LeadFollowUp[];
-  isOpen: boolean;
-  isSaving: boolean;
-  lead: Lead | null;
-  lostRemark: string;
-  onAddFollowUp: () => void;
-  onClose: () => void;
-  onConvert: () => void;
-  onDelete: (lead: Lead) => void;
-  onEdit: (lead: Lead) => void;
-  onFollowUpChange: (form: { note: string; outcome: FollowUpOutcome; scheduledAt: string }) => void;
-  onLostRemarkChange: (remark: string) => void;
-  onMarkLost: () => void;
-  onReEngage: () => void;
-}) {
-  if (!lead) return null;
-
-  return (
-    <Dialog className="max-w-4xl" isOpen={isOpen} onClose={onClose} title={lead.name}>
-      <div className="grid gap-[var(--space-5)] lg:grid-cols-[1fr_1.1fr]">
-        <Card className="p-[var(--space-4)]">
-          <div className="flex items-start justify-between gap-[var(--space-4)]">
-            <div className="flex items-center gap-[var(--space-3)]">
-              <InitialAvatar name={lead.name} tone={avatarTone(lead.name)} />
-              <div>
-                <p className="font-bold text-[var(--color-text)]">{lead.name}</p>
-                <p className="text-sm text-[var(--color-text-secondary)]">{lead.phone}</p>
-              </div>
-            </div>
-            <StatusBadge status={leadStatusTone(lead)}>
-              {lead.stage === "TRIAL_SCHEDULED" ? "Trial Scheduled" : formatLeadStatus(lead.status)}
-            </StatusBadge>
-          </div>
-          <div className="mt-[var(--space-5)] grid gap-3 text-sm">
-            <DetailRow label="Created" value={formatDate(lead.createdAt)} />
-            <DetailRow label="Source" value={formatEnum(lead.source)} />
-            <DetailRow label="Interest" value={formatInterest(lead)} />
-            <DetailRow label="Batch" value={lead.preferredBatch?.name ?? "—"} />
-            <DetailRow label="Owner" value={lead.assignedStaff?.fullName ?? "—"} />
-            <DetailRow label="Next follow-up" value={formatDateTime(lead.nextFollowUpAt)} />
-            <DetailRow label="Remark" value={lead.remark ?? "—"} />
-          </div>
-          <div className="mt-[var(--space-5)] flex flex-wrap gap-[var(--space-3)]">
-            <Button onClick={() => onEdit(lead)} type="button">Edit</Button>
-            <Button onClick={onConvert} type="button" variant="secondary">Convert</Button>
-            {lead.stage === "LOST_DECLINE" ? (
-              <Button onClick={onReEngage} type="button" variant="secondary">Re-engage</Button>
-            ) : null}
-            <Button onClick={() => onDelete(lead)} type="button" variant="secondary">Delete</Button>
-          </div>
-          <div className="mt-[var(--space-4)] grid gap-2">
-            <Input
-              onChange={(event) => onLostRemarkChange(event.target.value)}
-              placeholder="Lost reason"
-              value={lostRemark}
-            />
-            <Button disabled={isSaving} onClick={onMarkLost} type="button" variant="secondary">
-              Mark Lost
-            </Button>
-          </div>
-        </Card>
-
-        <Card className="p-[var(--space-4)]">
-          <h3 className="font-bold text-[var(--color-text)]">Follow-ups</h3>
-          <div className="mt-[var(--space-3)] grid gap-[var(--space-3)] md:grid-cols-[1fr_10rem]">
-            <Input
-              onChange={(event) => onFollowUpChange({ ...followUpForm, scheduledAt: event.target.value })}
-              type="datetime-local"
-              value={followUpForm.scheduledAt}
-            />
-            <Select
-              onChange={(value) => onFollowUpChange({ ...followUpForm, outcome: value as FollowUpOutcome })}
-              options={[
-                { label: "Pending", value: "PENDING" },
-                { label: "Done", value: "DONE" },
-                { label: "Unreachable", value: "UNREACHABLE" },
-                { label: "Rescheduled", value: "RESCHEDULED" },
-              ]}
-              value={followUpForm.outcome}
-            />
-            <textarea
-              className="min-h-20 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm outline-none focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)] md:col-span-2"
-              onChange={(event) => onFollowUpChange({ ...followUpForm, note: event.target.value })}
-              placeholder="Follow-up note"
-              value={followUpForm.note}
-            />
-            <Button className="md:col-span-2" disabled={isSaving || !followUpForm.scheduledAt} onClick={onAddFollowUp} type="button">
-              Add Follow-up
-            </Button>
-          </div>
-          <div className="mt-[var(--space-4)] divide-y divide-[var(--color-divider)]">
-            {followUps.length === 0 ? (
-              <p className="py-3 text-sm text-[var(--color-text-muted)]">No follow-ups yet.</p>
-            ) : (
-              followUps.map((followUp) => (
-                <div className="grid gap-1 py-3" key={followUp.id}>
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-[var(--color-text)]">{formatDateTime(followUp.scheduledAt)}</p>
-                    <StatusBadge status={followUp.outcome === "DONE" ? "active" : "pending"}>
-                      {formatEnum(followUp.outcome)}
-                    </StatusBadge>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[var(--color-divider)]">
+          {leads.map((lead) => (
+            <tr className="hover:bg-[var(--color-surface-hover)]" key={lead.id}>
+              <td className="min-w-72 px-4 py-4">
+                <div className="flex items-center gap-3">
+                  <InitialAvatar name={lead.fullName} tone={avatarTone(lead.id)} />
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-[var(--color-text)]">
+                      {lead.fullName}
+                    </p>
+                    <p className="truncate text-xs text-[var(--color-text-secondary)]">
+                      {lead.primaryPhone || "No phone"}{lead.email ? ` | ${lead.email}` : ""}
+                    </p>
                   </div>
-                  <p className="text-sm text-[var(--color-text-secondary)]">{followUp.note || "No note"}</p>
                 </div>
-              ))
-            )}
-          </div>
-        </Card>
-      </div>
-    </Dialog>
-  );
-}
-
-function ConfirmDialog({
-  isOpen,
-  isSaving,
-  message,
-  onClose,
-  onConfirm,
-  title,
-}: {
-  isOpen: boolean;
-  isSaving: boolean;
-  message: string;
-  onClose: () => void;
-  onConfirm: () => void;
-  title: string;
-}) {
-  return (
-    <Dialog className="max-w-md" isOpen={isOpen} onClose={onClose} title={title}>
-      <p className="text-sm text-[var(--color-text-secondary)]">{message}</p>
-      <div className="mt-[var(--space-5)] flex justify-end gap-[var(--space-3)]">
-        <Button onClick={onClose} type="button" variant="secondary">Cancel</Button>
-        <Button disabled={isSaving} onClick={onConfirm} type="button">
-          {isSaving ? "Working..." : "Confirm"}
-        </Button>
-      </div>
-    </Dialog>
-  );
-}
-
-function Field({ children, label }: { children: React.ReactNode; label: string }) {
-  return (
-    <label className="grid gap-2 text-xs font-bold text-[var(--color-text-secondary)]">
-      {label}
-      {children}
-    </label>
-  );
-}
-
-function Select({
-  onChange,
-  options,
-  value,
-}: {
-  onChange: (value: string) => void;
-  options: Array<{ label: string; value: string }>;
-  value?: string;
-}) {
-  return (
-    <select
-      className="h-[var(--control-height-md)] rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] text-sm outline-none"
-      onChange={(event) => onChange(event.target.value)}
-      value={value}
-    >
-      {options.map((option) => (
-        <option key={option.value || option.label} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="grid grid-cols-[8rem_1fr] gap-3">
-      <span className="font-semibold text-[var(--color-text-muted)]">{label}</span>
-      <span className="text-[var(--color-text)]">{value}</span>
+              </td>
+              <td className="px-4 py-4 text-[var(--color-text-secondary)]">
+                {formatEnum(lead.stage)}
+              </td>
+              <td className="px-4 py-4">
+                <StatusBadge status={statusTone(lead.status)}>
+                  {formatEnum(lead.status)}
+                </StatusBadge>
+              </td>
+              <td className="px-4 py-4 text-[var(--color-text-secondary)]">
+                {formatEnum(lead.source)}
+              </td>
+              <td className="px-4 py-4 text-[var(--color-text-secondary)]">
+                {formatEnum(lead.currentIntent)}
+              </td>
+              <td className="px-4 py-4 text-[var(--color-text-secondary)]">
+                {metadataLoading ? "Loading" : lead.assignedUser?.name || "Unassigned"}
+              </td>
+              <td className="px-4 py-4 text-[var(--color-text-secondary)]">
+                {formatDateTime(lead.nextFollowUpAt)}
+              </td>
+              <td className="px-4 py-4 text-[var(--color-text-secondary)]">
+                {formatDateTime(lead.createdAt)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-function ActionButton({
-  icon: Icon,
-  label,
-  tone = "default",
+function Pagination({
+  meta,
+  onPageChange,
 }: {
-  icon: typeof Phone;
-  label: string;
-  tone?: "default" | "success";
+  meta: PaginationMeta;
+  onPageChange: (page: number) => void;
 }) {
+  const start = meta.total ? (meta.page - 1) * meta.limit + 1 : 0;
+  const end = Math.min(meta.page * meta.limit, meta.total);
+
   return (
-    <button
-      aria-label={label}
-      className={cn(
-        "grid size-8 place-items-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-xs)] hover:bg-[var(--color-surface-hover)]",
-        tone === "success" ? "text-[var(--color-success)]" : "text-[var(--color-text-secondary)]",
-      )}
-      type="button"
-    >
-      <Icon className="size-[var(--icon-sm)]" />
-    </button>
+    <div className="flex flex-col gap-3 border-t border-[var(--color-divider)] px-[var(--space-5)] py-[var(--space-4)] text-sm text-[var(--color-text-secondary)] md:flex-row md:items-center md:justify-between">
+      <span>
+        Showing {start}-{end} of {meta.total}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button
+          aria-label="Previous page"
+          disabled={meta.page <= 1}
+          onClick={() => onPageChange(Math.max(1, meta.page - 1))}
+          variant="secondary"
+        >
+          <ChevronLeft className="size-[var(--icon-sm)]" />
+        </Button>
+        <span className="min-w-24 text-center font-semibold text-[var(--color-text)]">
+          Page {meta.page} of {Math.max(1, meta.totalPages)}
+        </span>
+        <Button
+          aria-label="Next page"
+          disabled={meta.page >= meta.totalPages}
+          onClick={() => onPageChange(Math.min(meta.totalPages, meta.page + 1))}
+          variant="secondary"
+        >
+          <ChevronRight className="size-[var(--icon-sm)]" />
+        </Button>
+      </div>
+    </div>
   );
 }
 
-function cleanLeadPayload(form: LeadFormState): UpdateLeadPayload {
-  const nextFollowUpAt = form.nextFollowUpAt
-    ? new Date(form.nextFollowUpAt).toISOString()
-    : undefined;
-  return Object.fromEntries(
-    Object.entries({ ...form, nextFollowUpAt }).filter(([, value]) => {
-      if (Array.isArray(value)) return value.length > 0;
-      return value !== "" && value !== undefined;
-    }),
-  ) as UpdateLeadPayload;
+function Alert({
+  children,
+  onDismiss,
+  tone,
+}: {
+  children: React.ReactNode;
+  onDismiss: () => void;
+  tone: "danger" | "success" | "warning";
+}) {
+  const Icon = tone === "success" ? CheckCircle2 : AlertCircle;
+
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-3 rounded-[var(--radius-md)] border px-4 py-3 text-sm",
+        tone === "success" &&
+          "border-[var(--color-success)] bg-[var(--green-50)] text-[var(--color-success)]",
+        tone === "danger" &&
+          "border-[var(--color-danger)] bg-[var(--red-50)] text-[var(--color-danger)]",
+        tone === "warning" &&
+          "border-[var(--yellow-300)] bg-[var(--yellow-50)] text-[var(--yellow-800)]",
+      )}
+    >
+      <Icon className="mt-0.5 size-[var(--icon-sm)] shrink-0" />
+      <div className="min-w-0 flex-1">{children}</div>
+      <button className="font-bold" onClick={onDismiss} type="button">
+        Dismiss
+      </button>
+    </div>
+  );
 }
 
-function sortLeads(data: Lead[], sort: string) {
-  return [...data].sort((a, b) => {
-    if (sort === "FOLLOW_UP_DATE") {
-      return new Date(a.nextFollowUpAt ?? 0).getTime() - new Date(b.nextFollowUpAt ?? 0).getTime();
-    }
-    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+function ConflictPanel({
+  conflict,
+  onLocate,
+}: {
+  conflict: LeadPhoneConflictError;
+  onLocate: () => void;
+}) {
+  const existingLead = conflict.existingLead;
+
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--color-danger)] bg-[var(--red-50)] p-4">
+      <div className="flex items-start gap-3">
+        <AlertCircle className="mt-0.5 size-[var(--icon-sm)] text-[var(--color-danger)]" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold text-[var(--color-danger)]">
+            Duplicate phone found
+          </p>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            {conflict.message}
+          </p>
+          {existingLead ? (
+            <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
+              Existing Lead: {existingLead.fullName} | {existingLead.primaryPhone} | {formatEnum(existingLead.stage)} | {formatEnum(existingLead.status)}
+            </p>
+          ) : null}
+        </div>
+        <Button onClick={onLocate} type="button" variant="secondary">
+          Show in list
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SelectField({
+  disabled,
+  label,
+  onChange,
+  options,
+  required,
+  value,
+}: {
+  disabled?: boolean;
+  label: string;
+  onChange: (value: string) => void;
+  options: Array<{ label: string; value: string }>;
+  required?: boolean;
+  value: string;
+}) {
+  return (
+    <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+      <span>{label}</span>
+      <select
+        className="h-[var(--control-height-lg)] rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] text-sm shadow-[var(--shadow-xs)] outline-none focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)] disabled:bg-[var(--color-surface-muted)] disabled:text-[var(--color-text-disabled)]"
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        required={required}
+        value={value}
+      >
+        {options.map((option) => (
+          <option key={option.value || option.label} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function MultiSelect({
+  label,
+  onChange,
+  options,
+  values,
+}: {
+  label: string;
+  onChange: (values: string[]) => void;
+  options: Array<{ label: string; value: string }>;
+  values: string[];
+}) {
+  function toggle(value: string) {
+    onChange(values.includes(value) ? values.filter((id) => id !== value) : [...values, value]);
+  }
+
+  return (
+    <fieldset className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-3">
+      <legend className="px-1 text-sm font-bold text-[var(--color-text)]">
+        {label}
+      </legend>
+      {options.length ? (
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          {options.map((option) => (
+            <label
+              className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]"
+              key={option.value}
+            >
+              <input
+                checked={values.includes(option.value)}
+                onChange={() => toggle(option.value)}
+                type="checkbox"
+              />
+              <span className="min-w-0 truncate">{option.label}</span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-sm text-[var(--color-text-secondary)]">
+          No active {label.toLowerCase()} available.
+        </p>
+      )}
+    </fieldset>
+  );
+}
+
+function DayPicker({
+  onChange,
+  values,
+}: {
+  onChange: (values: number[]) => void;
+  values: number[];
+}) {
+  function toggle(value: number) {
+    onChange(
+      values.includes(value)
+        ? values.filter((day) => day !== value)
+        : [...values, value].sort((first, second) => first - second),
+    );
+  }
+
+  return (
+    <fieldset className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-3">
+      <legend className="px-1 text-sm font-bold text-[var(--color-text)]">
+        Preferred days
+      </legend>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {dayOptions.map((day) => (
+          <button
+            className={cn(
+              "h-9 min-w-12 rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 text-sm font-semibold text-[var(--color-text-secondary)]",
+              values.includes(day.value) &&
+                "border-[var(--color-primary)] bg-[var(--color-primary-subtle)] text-[var(--color-primary)]",
+            )}
+            key={day.value}
+            onClick={() => toggle(day.value)}
+            type="button"
+          >
+            {day.label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function ScopeValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+      <span>{label}</span>
+      <div className="flex h-[var(--control-height-lg)] items-center rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-[var(--control-padding-x)] text-sm text-[var(--color-text-secondary)]">
+        <span className="truncate">{value}</span>
+      </div>
+    </div>
+  );
+}
+
+async function loadAssignees(
+  token: string,
+  user: AuthUser,
+  branchId: string,
+): Promise<AssigneeOption[]> {
+  const self = selfAssigneeOption(user, branchId);
+
+  if (user.role === "RECEPTIONIST") return self;
+
+  const receptionistsPromise = listBranchPersonnel(token, branchId, "receptionists", {
+    limit: 100,
+    status: "ACTIVE",
+  });
+
+  if (user.role === "BRANCH_ADMIN") {
+    const receptionists = await receptionistsPromise;
+    return dedupeAssignees([
+      ...self,
+      ...receptionists.data
+        .filter(isActiveReceptionist)
+        .map((personnel) => ({
+          id: personnel.userId,
+          name: personnel.name,
+          role: "RECEPTIONIST" as const,
+        })),
+    ]);
+  }
+
+  const [admins, receptionists] = await Promise.all([
+    listBranchAdmins(token, branchId, { limit: 100, status: "ACTIVE" }),
+    receptionistsPromise,
+  ]);
+
+  return dedupeAssignees([
+    ...admins.data
+      .filter(isActiveBranchAdmin)
+      .map((admin) => ({
+        id: admin.userId,
+        name: admin.name,
+        role: "BRANCH_ADMIN" as const,
+      })),
+    ...receptionists.data
+      .filter(isActiveReceptionist)
+      .map((personnel) => ({
+        id: personnel.userId,
+        name: personnel.name,
+        role: "RECEPTIONIST" as const,
+      })),
+  ]);
+}
+
+function selfAssigneeOption(user: AuthUser, branchId: string): AssigneeOption[] {
+  if (
+    user.status !== "ACTIVE" ||
+    user.branchId !== branchId ||
+    (user.role !== "BRANCH_ADMIN" && user.role !== "RECEPTIONIST")
+  ) {
+    return [];
+  }
+
+  return [{ id: user.id, name: user.name, role: user.role }];
+}
+
+function isActiveBranchAdmin(admin: BranchAdmin) {
+  return admin.userStatus === "ACTIVE" && admin.staffStatus === "ACTIVE";
+}
+
+function isActiveReceptionist(personnel: BranchPersonnel) {
+  return personnel.userStatus === "ACTIVE" && personnel.staffStatus === "ACTIVE";
+}
+
+function dedupeAssignees(options: AssigneeOption[]) {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    if (seen.has(option.id)) return false;
+    seen.add(option.id);
+    return true;
   });
 }
 
-function groupLead(lead: Lead): LeadGroup {
-  if (!lead.nextFollowUpAt) return "UPCOMING";
-  const followUp = new Date(lead.nextFollowUpAt);
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(start.getTime() + 86400000);
-  if (followUp < start) return "OVERDUE";
-  if (followUp < tomorrow) return "TODAY";
-  return "UPCOMING";
+function buildCreatePayload(
+  form: LeadFormState,
+  branchBatches: Batch[],
+  activePrograms: Program[],
+  activeGoals: Goal[],
+): CreateLeadRequest {
+  const fullName = form.fullName.trim();
+  if (fullName.length < 2) throw new Error("Enter the Lead's full name.");
+
+  const primaryPhone = normalizeIndianMobile(form.primaryPhone);
+  if (!primaryPhone) throw new Error("Enter a valid Indian primary phone number.");
+
+  const alternatePhone = form.alternatePhone.trim()
+    ? normalizeIndianMobile(form.alternatePhone)
+    : null;
+  if (form.alternatePhone.trim() && !alternatePhone) {
+    throw new Error("Enter a valid Indian alternate phone number.");
+  }
+  if (alternatePhone && alternatePhone === primaryPhone) {
+    throw new Error("Alternate phone must be different from the primary phone.");
+  }
+
+  const email = form.email.trim().toLowerCase();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Enter a valid email address.");
+  }
+
+  if (Boolean(form.preferredStartTime) !== Boolean(form.preferredEndTime)) {
+    throw new Error("Enter both preferred start and end times.");
+  }
+  if (
+    form.preferredStartTime &&
+    form.preferredEndTime &&
+    form.preferredStartTime >= form.preferredEndTime
+  ) {
+    throw new Error("Preferred end time must be after the start time.");
+  }
+
+  const allowedBatchIds = new Set(branchBatches.map((batch) => batch.id));
+  const allowedProgramIds = new Set(activePrograms.map((program) => program.id));
+  const allowedGoalIds = new Set(activeGoals.map((goal) => goal.id));
+  const programIds = form.programIds.filter((programId) => allowedProgramIds.has(programId));
+  const goalIds = form.goalIds.filter((goalId) => allowedGoalIds.has(goalId));
+
+  const payload: CreateLeadRequest = {
+    currentIntent: form.currentIntent,
+    fullName,
+    primaryPhone,
+    source: form.source,
+  };
+
+  if (alternatePhone) payload.alternatePhone = alternatePhone;
+  if (email) payload.email = email;
+  if (form.dob) payload.dob = form.dob;
+  if (form.sourceDetails.trim()) payload.sourceDetails = form.sourceDetails.trim();
+  if (form.preferredChannel) payload.preferredChannel = form.preferredChannel;
+  if (form.batchTypePref) payload.batchTypePref = form.batchTypePref;
+  if (form.preferredBatchId && allowedBatchIds.has(form.preferredBatchId)) {
+    payload.preferredBatchId = form.preferredBatchId;
+  }
+  if (form.preferredDays.length) payload.preferredDays = form.preferredDays;
+  if (form.preferredStartTime) payload.preferredStartTime = form.preferredStartTime;
+  if (form.preferredEndTime) payload.preferredEndTime = form.preferredEndTime;
+  if (programIds.length) payload.programIds = programIds;
+  if (goalIds.length) payload.goalIds = goalIds;
+  if (form.assignedUserId) payload.assignedUserId = form.assignedUserId;
+  if (form.currentSummary.trim()) payload.currentSummary = form.currentSummary.trim();
+
+  return payload;
 }
 
-function isInCreatedRange(value: string, range: CreatedRange) {
-  if (range === "ALL") return true;
-  const date = new Date(value);
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (range === "TODAY") return date >= start;
-  if (range === "LAST_7") return date >= new Date(start.getTime() - 7 * 86400000);
-  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+function normalizeIndianMobile(input: string) {
+  const raw = input.trim();
+  const digits = raw.replace(/\D/g, "");
+  const withoutCountry =
+    digits.length === 12 && digits.startsWith("91")
+      ? digits.slice(2)
+      : digits.length === 10
+        ? digits
+        : "";
+
+  if (!/^[6-9]\d{9}$/.test(withoutCountry)) return null;
+  return `+91${withoutCountry}`;
 }
 
-function leadStatusTone(lead: Lead) {
-  if (lead.stage === "TRIAL_SCHEDULED") return "trial";
-  if (lead.status === "LEAD_FOLLOW_UP") return "pending";
-  if (lead.status === "LEAD_UNREACHABLE") return "lost";
-  return "active";
+function labelFor<T extends string>(options: Array<{ label: string; value: T }>, value: T) {
+  return options.find((option) => option.value === value)?.label ?? formatEnum(value);
 }
 
-function formatInterest(lead: Lead) {
-  const names = lead.interests?.map((interest) => interest.program?.name).filter(Boolean);
-  return names?.length ? names.join(", ") : "—";
+function scopeDescription(role?: AuthUser["role"]) {
+  if (role === "CRM_OWNER") return "Choose the Organization and Branch before requesting Leads.";
+  if (role === "ORGANIZATION_OWNER") return "Choose one of your active Branches.";
+  if (role === "BRANCH_ADMIN" || role === "RECEPTIONIST") {
+    return "Your authenticated Branch scope is applied automatically.";
+  }
+  return "Lead access depends on your authenticated role.";
 }
 
-function avatarTone(name: string): AvatarTone {
-  const tones: AvatarTone[] = ["orange", "green", "purple", "blue", "teal", "red"];
-  return tones[name.length % tones.length];
-}
-
-function formatLeadStatus(status: string) {
-  if (status === "NEW") return "New";
-  return formatEnum(status);
-}
-
-function formatEnum(value: string) {
+function formatEnum(value?: string | null) {
+  if (!value) return "None";
   return value
     .split("_")
     .map((part) => part[0] + part.slice(1).toLowerCase())
     .join(" ");
 }
 
-function dateOnly(value?: string | null) {
-  if (!value) return "";
-  return value.slice(0, 10);
+function statusTone(status: LeadStatus) {
+  if (status === "FOLLOW_UP") return "pending";
+  if (status === "ARCHIVED" || status === "DORMANT") return "lost";
+  return "active";
 }
 
-function toDateTimeLocal(value?: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toISOString().slice(0, 16);
-}
-
-function formatDate(value?: string | null) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  }).format(date);
+function avatarTone(id: string) {
+  const tones = ["blue", "green", "orange", "purple", "red", "teal"] as const;
+  return tones[id.charCodeAt(0) % tones.length];
 }
 
 function formatDateTime(value?: string | null) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  if (!value) return "Not set";
   return new Intl.DateTimeFormat("en-IN", {
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    month: "short",
-    year: "numeric",
-  }).format(date);
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function timeRange(batch: Batch) {
+  return `${batch.startTime.slice(0, 5)}-${batch.endTime.slice(0, 5)}`;
+}
+
+function dateFilterValue(value: string, edge: "start" | "end") {
+  if (!value) return undefined;
+  return `${value}T${edge === "start" ? "00:00:00.000" : "23:59:59.999"}Z`;
+}
+
+function shortId(id: string) {
+  if (!id) return "";
+  return id.length > 8 ? `${id.slice(0, 8)}...` : id;
 }

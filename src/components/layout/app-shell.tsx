@@ -23,7 +23,6 @@ import {
   MessageSquare,
   Search,
   Settings,
-  UserPlus,
   UserRound,
   UsersRound,
   WalletCards,
@@ -35,7 +34,6 @@ import { BrandLockup } from "@/components/brand/brand-lockup";
 import { Button } from "@/components/ui/button";
 import { getBranches, type Branch } from "@/lib/api/branches";
 import { AuthApiError, getCurrentUser, type AuthUser } from "@/lib/api/auth";
-import { getLeads } from "@/lib/api/leads";
 import { getMembers } from "@/lib/api/members";
 import { getPlans } from "@/lib/api/plans";
 import { getStaff, staffQueryForUser } from "@/lib/api/staff";
@@ -60,7 +58,13 @@ const navigation: NavigationItem[] = [
   { label: "Organizations", href: "/organizations", icon: Building2, roles: ["CRM_OWNER"] },
   { label: "Inbox", href: "/inbox", icon: Inbox, countKey: "inbox" },
   { label: "Members", href: "/members", icon: UsersRound, countKey: "members" },
-  { label: "Leads", href: "/leads", icon: UserRound, countKey: "leads" },
+  {
+    label: "Leads",
+    href: "/leads",
+    icon: UserRound,
+    countKey: "leads",
+    roles: ["CRM_OWNER", "ORGANIZATION_OWNER", "BRANCH_ADMIN", "RECEPTIONIST"],
+  },
   { label: "Plans Handling", href: "/plans", icon: WalletCards },
   { label: "Batches", href: "/batches", icon: Grid2X2 },
   { label: "Staff", href: "/staff", icon: UsersRound, countKey: "staff" },
@@ -76,7 +80,7 @@ type SearchItem = {
   href: string;
   label: string;
   meta: string;
-  type: "Member" | "Lead" | "Plan" | "Staff";
+  type: "Member" | "Plan" | "Staff";
 };
 
 const BRANCH_KEY = "fitcrm.selectedBranchId";
@@ -84,14 +88,8 @@ const BRANCH_KEY = "fitcrm.selectedBranchId";
 const fallbackNotifications = [
   {
     icon: CircleAlert,
-    title: "4 overdue follow-ups",
-    description: "Leads need action today",
-    href: "/leads",
-  },
-  {
-    icon: UserPlus,
-    title: "3 new enquiries",
-    description: "Review and assign owners",
+    title: "Inbox review pending",
+    description: "New messages need attention",
     href: "/inbox",
   },
   {
@@ -110,7 +108,7 @@ export function AppShell({ children, user }: AppShellProps) {
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [counts, setCounts] = useState<Record<NavigationCountKey, number>>({
     inbox: 7,
-    leads: 18,
+    leads: 0,
     members: 0,
     staff: 0,
   });
@@ -128,6 +126,7 @@ export function AppShell({ children, user }: AppShellProps) {
     weekday: "short",
   }).format(new Date());
   const selectedBranch = branches.find((branch) => branch.id === selectedBranchId);
+  const notifications = useMemo(() => fallbackNotifications, []);
   const visibleSearchItems = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return [];
@@ -162,13 +161,12 @@ export function AppShell({ children, user }: AppShellProps) {
         saveSession(accessToken, currentUser);
 
         const staffQuery = staffQueryForUser(currentUser);
-        const [branchResult, memberResult, leadResult, planResult, staffResult] =
+        const [branchResult, memberResult, planResult, staffResult] =
           await Promise.allSettled([
             currentUser.role === "CRM_OWNER"
               ? Promise.resolve<Branch[]>([])
               : getBranches(accessToken),
             getMembers(accessToken),
-            getLeads(accessToken),
             getPlans(accessToken),
             staffQuery ? getStaff(accessToken, staffQuery) : Promise.resolve(null),
           ]);
@@ -194,13 +192,12 @@ export function AppShell({ children, user }: AppShellProps) {
         }
 
         const members = memberResult.status === "fulfilled" ? memberResult.value : [];
-        const leads = leadResult.status === "fulfilled" ? leadResult.value : [];
         const plans = planResult.status === "fulfilled" ? planResult.value : [];
         const staff = staffResult.status === "fulfilled" ? staffResult.value?.data ?? [] : [];
 
         setCounts({
           inbox: 7,
-          leads: leads.length || 18,
+          leads: 0,
           members: members.length,
           staff: staff.length,
         });
@@ -210,12 +207,6 @@ export function AppShell({ children, user }: AppShellProps) {
             label: member.name,
             meta: member.phone,
             type: "Member" as const,
-          })),
-          ...leads.map((lead) => ({
-            href: "/leads",
-            label: lead.name,
-            meta: lead.phone,
-            type: "Lead" as const,
           })),
           ...plans.map((plan) => ({
             href: "/plans",
@@ -390,7 +381,7 @@ export function AppShell({ children, user }: AppShellProps) {
             <input
               className="h-full w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] pl-11 pr-16 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search members, leads, plans, staff..."
+              placeholder="Search members, plans, staff..."
               type="search"
               value={searchQuery}
             />
@@ -442,11 +433,12 @@ export function AppShell({ children, user }: AppShellProps) {
               >
                 <Bell className="size-[var(--icon-sm)]" />
                 <span className="absolute -right-1 -top-1 grid size-5 place-items-center rounded-full bg-[var(--color-danger)] text-[10px] font-bold text-[var(--color-text-inverse)]">
-                  {fallbackNotifications.length}
+                  {notifications.length}
                 </span>
               </button>
               {isNotificationsOpen ? (
                 <NotificationsMenu
+                  notifications={notifications}
                   onSelect={(href) => {
                     setIsNotificationsOpen(false);
                     router.push(href);
@@ -572,9 +564,7 @@ function SearchIcon({ type }: { type: SearchItem["type"] }) {
   const Icon =
     type === "Member"
       ? UsersRound
-      : type === "Lead"
-        ? UserRound
-        : type === "Plan"
+      : type === "Plan"
           ? WalletCards
           : UsersRound;
 
@@ -586,8 +576,10 @@ function SearchIcon({ type }: { type: SearchItem["type"] }) {
 }
 
 function NotificationsMenu({
+  notifications,
   onSelect,
 }: {
+  notifications: typeof fallbackNotifications;
   onSelect: (href: string) => void;
 }) {
   return (
@@ -597,10 +589,10 @@ function NotificationsMenu({
           Notifications
         </p>
         <span className="rounded-full bg-[var(--red-100)] px-2 py-0.5 text-xs font-bold text-[var(--color-danger)]">
-          {fallbackNotifications.length}
+          {notifications.length}
         </span>
       </div>
-      {fallbackNotifications.map((notification) => {
+      {notifications.map((notification) => {
         const Icon = notification.icon;
         return (
           <button
