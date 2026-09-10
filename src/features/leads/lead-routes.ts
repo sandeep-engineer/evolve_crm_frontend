@@ -7,6 +7,12 @@ const leadTabSegments: Record<Exclude<LeadProfileTab, "profile">, string> = {
   visits: "visits",
 };
 
+export function leadProfileTabFromSegment(segment: string | null): LeadProfileTab {
+  if (segment === "follow-ups") return "followups";
+  if (segment === "contacts" || segment === "timeline" || segment === "visits") return segment;
+  return "profile";
+}
+
 export function leadProfilePath(leadId: string) {
   return `/leads/${encodeURIComponent(leadId)}`;
 }

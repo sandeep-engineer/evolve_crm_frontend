@@ -61,6 +61,7 @@ export function useLeadProfileDetailController({
   const [isAssigneesLoading, setIsAssigneesLoading] = useState(false);
   const [assigneeError, setAssigneeError] = useState("");
   const activeLeadIdRef = useRef(leadId);
+  const profileRequestRef = useRef(0);
 
   const activePrograms = useMemo(
     () => programs.filter((program) => program.isActive),
@@ -94,7 +95,10 @@ export function useLeadProfileDetailController({
       setAssigneePage(1);
     }, 0);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      activeLeadIdRef.current = "";
+      window.clearTimeout(timeout);
+    };
   }, [leadId]);
 
   useEffect(() => {
@@ -115,14 +119,16 @@ export function useLeadProfileDetailController({
         getGoals(token),
         getBatches(token),
       ]);
+      if (activeLeadIdRef.current !== leadId) return;
       setPrograms(programData);
       setGoals(goalData);
       setBatches(batchData);
     } catch (apiError) {
+      if (activeLeadIdRef.current !== leadId) return;
       if (handleLeadApiError(apiError)) return;
       setMetadataWarning(apiError instanceof Error ? apiError.message : "Unable to load Lead metadata.");
     }
-  }, [canUseLeads, handleLeadApiError, token]);
+  }, [canUseLeads, handleLeadApiError, leadId, token]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -134,12 +140,13 @@ export function useLeadProfileDetailController({
 
   const refreshLeadProfile = useCallback(async (currentLeadId: string) => {
     if (!token) return null;
+    const requestId = ++profileRequestRef.current;
     setIsProfileLoading(true);
     setProfileError("");
     setProfileStatus(null);
     try {
       const detail = await getLeadDetail(token, currentLeadId);
-      if (activeLeadIdRef.current !== currentLeadId) return null;
+      if (activeLeadIdRef.current !== currentLeadId || profileRequestRef.current !== requestId) return null;
       setLead(detail);
       setEditForm(leadToForm(detail));
       setAssignmentValue(detail.assignedUser?.id ?? "");
@@ -147,12 +154,13 @@ export function useLeadProfileDetailController({
     } catch (apiError) {
       if (activeLeadIdRef.current !== currentLeadId) return null;
       if (handleLeadApiError(apiError)) return null;
+      if (profileRequestRef.current !== requestId) return null;
       setLead(null);
       setProfileError(apiError instanceof Error ? apiError.message : "Unable to load Lead profile.");
       setProfileStatus(typeof apiError === "object" && apiError && "status" in apiError ? Number(apiError.status) : null);
       return null;
     } finally {
-      if (activeLeadIdRef.current === currentLeadId) setIsProfileLoading(false);
+      if (activeLeadIdRef.current === currentLeadId && profileRequestRef.current === requestId) setIsProfileLoading(false);
     }
   }, [handleLeadApiError, token]);
 
@@ -205,6 +213,7 @@ export function useLeadProfileDetailController({
   async function submitProfileUpdate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!token || !lead) return;
+    const currentLeadId = lead.id;
 
     setIsUpdatingProfile(true);
     setProfileError("");
@@ -212,23 +221,26 @@ export function useLeadProfileDetailController({
     try {
       const payload = buildUpdatePayload(editForm, branchBatches, activePrograms, activeGoals);
       const updated = await updateLeadProfile(token, lead.id, payload);
+      if (activeLeadIdRef.current !== currentLeadId) return;
       setLead(updated);
       setEditForm(leadToForm(updated));
       setNotice("Lead profile updated.");
       setIsEditingProfile(false);
     } catch (apiError) {
+      if (activeLeadIdRef.current !== currentLeadId) return;
       if (apiError instanceof LeadPhoneConflictError) {
         setEditConflict(apiError);
       } else if (!handleLeadApiError(apiError)) {
         setProfileError(apiError instanceof Error ? apiError.message : "Unable to update Lead profile.");
       }
     } finally {
-      setIsUpdatingProfile(false);
+      if (activeLeadIdRef.current === currentLeadId) setIsUpdatingProfile(false);
     }
   }
 
   async function submitAssignmentChange(nextAssignedUserId: string | null) {
     if (!token || !lead) return;
+    const currentLeadId = lead.id;
 
     const currentAssignedUserId = lead.assignedUser?.id ?? null;
     if (currentAssignedUserId === nextAssignedUserId) return;
@@ -245,16 +257,18 @@ export function useLeadProfileDetailController({
     setAssignmentError("");
     try {
       const updated = await updateLeadAssignment(token, lead.id, { assignedUserId: nextAssignedUserId });
+      if (activeLeadIdRef.current !== currentLeadId) return;
       setLead(updated);
       setEditForm(leadToForm(updated));
       setAssignmentValue(updated.assignedUser?.id ?? "");
       setNotice(nextAssignedUserId ? "Lead assignment updated." : "Lead assignment removed.");
     } catch (apiError) {
+      if (activeLeadIdRef.current !== currentLeadId) return;
       if (handleLeadApiError(apiError)) return;
       setAssignmentError(apiError instanceof Error ? apiError.message : "Unable to update Lead assignment.");
       void refreshLeadProfile(lead.id);
     } finally {
-      setIsUpdatingAssignment(false);
+      if (activeLeadIdRef.current === currentLeadId) setIsUpdatingAssignment(false);
     }
   }
 

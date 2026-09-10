@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ShieldAlert } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSelectedLayoutSegment } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card } from "@/components/ui/card";
 import { AuthApiError, getCurrentUser, type AuthUser } from "@/lib/api/auth";
@@ -16,16 +16,17 @@ import { useLeadFollowUpsController } from "./hooks/use-lead-follow-ups-controll
 import { useLeadProfileDetailController } from "./hooks/use-lead-profile-detail-controller";
 import { useLeadTimelineController } from "./hooks/use-lead-timeline-controller";
 import { useLeadVisitsController } from "./hooks/use-lead-visits-controller";
-import { leadListSearchPath, leadProfileTabPath } from "./lead-routes";
+import { leadListSearchPath, leadProfileTabFromSegment, leadProfileTabPath } from "./lead-routes";
 import type { LeadProfileTab } from "./types";
 
 type LeadProfileScreenProps = {
-  activeTab: LeadProfileTab;
+  children: ReactNode;
   leadId: string;
 };
 
-export function LeadProfileScreen({ activeTab, leadId }: LeadProfileScreenProps) {
+export function LeadProfileScreen({ children, leadId }: LeadProfileScreenProps) {
   const router = useRouter();
+  const activeTab = leadProfileTabFromSegment(useSelectedLayoutSegment());
   const [token, setToken] = useState("");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [notice, setNotice] = useState("");
@@ -41,7 +42,7 @@ export function LeadProfileScreen({ activeTab, leadId }: LeadProfileScreenProps)
   }, [router]);
 
   const navigateToTab = useCallback((tab: LeadProfileTab) => {
-    router.push(leadProfileTabPath(leadId, tab));
+    router.push(leadProfileTabPath(leadId, tab), { scroll: false });
   }, [leadId, router]);
 
   useEffect(() => {
@@ -62,6 +63,7 @@ export function LeadProfileScreen({ activeTab, leadId }: LeadProfileScreenProps)
         setUser(currentUser);
         saveSession(currentToken, currentUser);
       } catch (apiError) {
+        if (!isMounted) return;
         if (apiError instanceof AuthApiError && apiError.status === 401) {
           clearSession();
           router.replace("/");
@@ -89,7 +91,8 @@ export function LeadProfileScreen({ activeTab, leadId }: LeadProfileScreenProps)
     setNotice,
     token,
   });
-  const timeline = useLeadTimelineController({ activeTab, handleLeadApiError, leadId, token });
+  const workflowToken = canUseLeads && profile.lead ? token : "";
+  const timeline = useLeadTimelineController({ activeTab, handleLeadApiError, leadId, token: workflowToken });
   const contacts = useLeadContactsController({
     activeTab,
     handleLeadApiError,
@@ -100,7 +103,7 @@ export function LeadProfileScreen({ activeTab, leadId }: LeadProfileScreenProps)
     refreshLeadProfile: profile.actions.refreshLeadProfile,
     refreshTimeline: timeline.actions.loadTimeline,
     setNotice,
-    token,
+    token: workflowToken,
   });
   const followUps = useLeadFollowUpsController({
     activeTab,
@@ -113,7 +116,7 @@ export function LeadProfileScreen({ activeTab, leadId }: LeadProfileScreenProps)
     refreshLeadProfile: profile.actions.refreshLeadProfile,
     refreshTimeline: timeline.actions.loadTimeline,
     setNotice,
-    token,
+    token: workflowToken,
   });
   const visits = useLeadVisitsController({
     activePrograms: profile.activePrograms,
@@ -125,7 +128,7 @@ export function LeadProfileScreen({ activeTab, leadId }: LeadProfileScreenProps)
     refreshLeadProfile: profile.actions.refreshLeadProfile,
     refreshTimeline: timeline.actions.loadTimeline,
     setNotice,
-    token,
+    token: workflowToken,
   });
 
   if (user?.role === "LEAD_CALLER") {
@@ -249,6 +252,7 @@ export function LeadProfileScreen({ activeTab, leadId }: LeadProfileScreenProps)
             visitsMeta={visits.meta}
           />
         </Card>
+        {children}
       </div>
 
       <LeadWorkflowDialogs

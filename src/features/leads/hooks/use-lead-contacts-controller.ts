@@ -58,6 +58,7 @@ export function useLeadContactsController({
   const [formError, setFormError] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const activeLeadIdRef = useRef(leadId);
+  const listRequestRef = useRef(0);
 
   useEffect(() => {
     activeLeadIdRef.current = leadId;
@@ -79,11 +80,15 @@ export function useLeadContactsController({
       setIsRecording(false);
     }, 0);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      activeLeadIdRef.current = "";
+      window.clearTimeout(timeout);
+    };
   }, [leadId]);
 
   const loadContacts = useCallback(async (currentLeadId: string) => {
     if (!token) return;
+    const requestId = ++listRequestRef.current;
     setIsLoading(true);
     setError("");
     try {
@@ -93,17 +98,18 @@ export function useLeadContactsController({
         outcome: outcomeFilter || undefined,
         page,
       });
-      if (activeLeadIdRef.current !== currentLeadId) return;
+      if (activeLeadIdRef.current !== currentLeadId || listRequestRef.current !== requestId) return;
       setContacts(result.data);
       setMeta(result.meta);
     } catch (apiError) {
       if (activeLeadIdRef.current !== currentLeadId) return;
       if (handleLeadApiError(apiError)) return;
+      if (listRequestRef.current !== requestId) return;
       setContacts([]);
       setMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
       setError(apiError instanceof Error ? apiError.message : "Unable to load Lead contact history.");
     } finally {
-      if (activeLeadIdRef.current === currentLeadId) setIsLoading(false);
+      if (activeLeadIdRef.current === currentLeadId && listRequestRef.current === requestId) setIsLoading(false);
     }
   }, [channelFilter, handleLeadApiError, outcomeFilter, page, token]);
 
@@ -112,7 +118,10 @@ export function useLeadContactsController({
     const timeout = window.setTimeout(() => {
       void loadContacts(leadId);
     }, 0);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      listRequestRef.current += 1;
+      window.clearTimeout(timeout);
+    };
   }, [activeTab, leadId, loadContacts]);
 
   useEffect(() => {
@@ -175,6 +184,7 @@ export function useLeadContactsController({
         refreshTimeline(currentLeadId),
         loadContacts(currentLeadId),
       ]);
+      if (activeLeadIdRef.current !== currentLeadId) return;
       navigateToTab("contacts");
     } catch (apiError) {
       if (activeLeadIdRef.current !== currentLeadId) return;

@@ -54,6 +54,7 @@ export function useLeadVisitsController({
   const [formError, setFormError] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const activeLeadIdRef = useRef(leadId);
+  const listRequestRef = useRef(0);
 
   useEffect(() => {
     activeLeadIdRef.current = leadId;
@@ -73,26 +74,31 @@ export function useLeadVisitsController({
       setIsRecording(false);
     }, 0);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      activeLeadIdRef.current = "";
+      window.clearTimeout(timeout);
+    };
   }, [leadId]);
 
   const loadVisits = useCallback(async (currentLeadId: string) => {
     if (!token) return;
+    const requestId = ++listRequestRef.current;
     setIsLoading(true);
     setError("");
     try {
       const result = await listLeadVisits(token, currentLeadId, { limit: pageSize, page });
-      if (activeLeadIdRef.current !== currentLeadId) return;
+      if (activeLeadIdRef.current !== currentLeadId || listRequestRef.current !== requestId) return;
       setVisits(result.data);
       setMeta(result.meta);
     } catch (apiError) {
       if (activeLeadIdRef.current !== currentLeadId) return;
       if (handleLeadApiError(apiError)) return;
+      if (listRequestRef.current !== requestId) return;
       setVisits([]);
       setMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
       setError(apiError instanceof Error ? apiError.message : "Unable to load Lead visits.");
     } finally {
-      if (activeLeadIdRef.current === currentLeadId) setIsLoading(false);
+      if (activeLeadIdRef.current === currentLeadId && listRequestRef.current === requestId) setIsLoading(false);
     }
   }, [handleLeadApiError, page, token]);
 
@@ -101,7 +107,10 @@ export function useLeadVisitsController({
     const timeout = window.setTimeout(() => {
       void loadVisits(leadId);
     }, 0);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      listRequestRef.current += 1;
+      window.clearTimeout(timeout);
+    };
   }, [activeTab, leadId, loadVisits]);
 
   async function openDetail(visitId: string) {
@@ -156,6 +165,7 @@ export function useLeadVisitsController({
         refreshTimeline(currentLeadId),
         loadVisits(currentLeadId),
       ]);
+      if (activeLeadIdRef.current !== currentLeadId) return;
       navigateToTab("visits");
     } catch (apiError) {
       if (activeLeadIdRef.current !== currentLeadId) return;

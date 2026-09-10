@@ -92,6 +92,7 @@ export function useLeadFollowUpsController({
   const [actionError, setActionError] = useState("");
   const [isSubmittingAction, setIsSubmittingAction] = useState(false);
   const activeLeadIdRef = useRef(leadId);
+  const listRequestRef = useRef(0);
 
   useEffect(() => {
     activeLeadIdRef.current = leadId;
@@ -123,11 +124,15 @@ export function useLeadFollowUpsController({
       setIsSubmittingAction(false);
     }, 0);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      activeLeadIdRef.current = "";
+      window.clearTimeout(timeout);
+    };
   }, [leadId]);
 
   const loadFollowUps = useCallback(async (currentLeadId: string) => {
     if (!token) return;
+    const requestId = ++listRequestRef.current;
     setIsLoading(true);
     setError("");
     try {
@@ -140,17 +145,18 @@ export function useLeadFollowUpsController({
         scheduledTo: dateFilterValue(scheduledTo, "end"),
         status: statusFilter || undefined,
       });
-      if (activeLeadIdRef.current !== currentLeadId) return;
+      if (activeLeadIdRef.current !== currentLeadId || listRequestRef.current !== requestId) return;
       setFollowUps(result.data);
       setMeta(result.meta);
     } catch (apiError) {
       if (activeLeadIdRef.current !== currentLeadId) return;
       if (handleLeadApiError(apiError)) return;
+      if (listRequestRef.current !== requestId) return;
       setFollowUps([]);
       setMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
       setError(apiError instanceof Error ? apiError.message : "Unable to load Lead follow-ups.");
     } finally {
-      if (activeLeadIdRef.current === currentLeadId) setIsLoading(false);
+      if (activeLeadIdRef.current === currentLeadId && listRequestRef.current === requestId) setIsLoading(false);
     }
   }, [assignedFilter, handleLeadApiError, overdueOnly, page, scheduledFrom, scheduledTo, statusFilter, token]);
 
@@ -159,7 +165,10 @@ export function useLeadFollowUpsController({
     const timeout = window.setTimeout(() => {
       void loadFollowUps(leadId);
     }, 0);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      listRequestRef.current += 1;
+      window.clearTimeout(timeout);
+    };
   }, [activeTab, leadId, loadFollowUps]);
 
   useEffect(() => {
@@ -227,6 +236,7 @@ export function useLeadFollowUpsController({
       setIsScheduleOpen(false);
       setScheduleForm(emptyFollowUpForm);
       await refreshWorkflowViews(currentLeadId);
+      if (activeLeadIdRef.current !== currentLeadId) return;
       navigateToTab("followups");
     } catch (apiError) {
       if (activeLeadIdRef.current !== currentLeadId) return;
@@ -271,14 +281,17 @@ export function useLeadFollowUpsController({
       if (action === "complete") {
         const payload = buildCompleteFollowUpPayload(completeForm, profileAssignees);
         await completeLeadFollowUp(token, currentLeadId, actionFollowUp.id, payload);
+        if (activeLeadIdRef.current !== currentLeadId) return;
         setNotice("Follow-up completed and Contact recorded.");
       } else if (action === "reschedule") {
         const payload = buildReschedulePayload(rescheduleForm);
         await rescheduleLeadFollowUp(token, currentLeadId, actionFollowUp.id, payload);
+        if (activeLeadIdRef.current !== currentLeadId) return;
         setNotice("Follow-up rescheduled.");
       } else {
         const payload = buildCancelPayload(cancelForm);
         await cancelLeadFollowUp(token, currentLeadId, actionFollowUp.id, payload);
+        if (activeLeadIdRef.current !== currentLeadId) return;
         setNotice("Follow-up cancelled.");
       }
       if (activeLeadIdRef.current !== currentLeadId) return;
