@@ -1,8 +1,6 @@
 "use client";
 
-"use client";
-
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useLayoutEffect, useId, useRef } from "react";
 import type React from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -16,6 +14,9 @@ type DialogProps = {
   title: string;
 };
 
+const focusableSelector =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Dialog({
   children,
   className,
@@ -25,17 +26,29 @@ export function Dialog({
   title,
 }: DialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const descriptionId = useId();
+
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen) return;
 
     const dialog = dialogRef.current;
-    const focusable = dialog?.querySelector<HTMLElement>(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    );
-    focusable?.focus();
+    const content = contentRef.current;
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const initialFocus =
+      content?.querySelector<HTMLElement>("[data-dialog-initial-focus]") ??
+      content?.querySelector<HTMLElement>(focusableSelector) ??
+      dialog?.querySelector<HTMLElement>(focusableSelector);
+    initialFocus?.focus();
 
     function handleKeyDown(event: KeyboardEvent) {
       const openDialogs = Array.from(
@@ -45,15 +58,13 @@ export function Dialog({
 
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab" || !dialog) return;
 
       const focusableElements = Array.from(
-        dialog.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
+        dialog.querySelectorAll<HTMLElement>(focusableSelector),
       );
       if (!focusableElements.length) return;
 
@@ -69,8 +80,15 @@ export function Dialog({
     }
 
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      const restoreFocusTarget = restoreFocusRef.current;
+      if (restoreFocusTarget?.isConnected) {
+        restoreFocusTarget.focus();
+      }
+      restoreFocusRef.current = null;
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -98,7 +116,7 @@ export function Dialog({
             <X className="size-[var(--icon-sm)]" />
           </button>
         </div>
-        <div className="max-h-[calc(90vh-3.5rem)] overflow-y-auto p-[var(--space-5)]">
+        <div ref={contentRef} className="max-h-[calc(90vh-3.5rem)] overflow-y-auto p-[var(--space-5)]">
           {description ? <p className="sr-only" id={descriptionId}>{description}</p> : null}
           {children}
         </div>

@@ -1074,6 +1074,7 @@ export function LeadsScreen() {
 
           <div className="grid gap-4 md:grid-cols-2">
             <Input
+              data-dialog-initial-focus
               label="Full name"
               onChange={(event) => setForm((current) => ({ ...current, fullName: event.target.value }))}
               required
