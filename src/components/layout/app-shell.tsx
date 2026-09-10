@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import {
@@ -8,8 +8,8 @@ import {
   Bell,
   CalendarDays,
   Check,
+  CheckCheck,
   ChevronDown,
-  CircleAlert,
   Building2,
   FileText,
   Grid2X2,
@@ -21,6 +21,7 @@ import {
   MapPin,
   Menu,
   MessageSquare,
+  RefreshCw,
   Search,
   Settings,
   UserRound,
@@ -35,6 +36,14 @@ import { Button } from "@/components/ui/button";
 import { getBranches, type Branch } from "@/lib/api/branches";
 import { AuthApiError, getCurrentUser, type AuthUser } from "@/lib/api/auth";
 import { getMembers } from "@/lib/api/members";
+import {
+  getUnreadNotificationCount,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  NotificationApiError,
+  type NotificationItem,
+} from "@/lib/api/notifications";
 import { getPlans } from "@/lib/api/plans";
 import { getStaff, staffQueryForUser } from "@/lib/api/staff";
 import { clearSession, getAccessToken, saveSession } from "@/lib/session";
@@ -84,20 +93,13 @@ type SearchItem = {
 };
 
 const BRANCH_KEY = "fitcrm.selectedBranchId";
-
-const fallbackNotifications = [
-  {
-    icon: CircleAlert,
-    title: "Inbox review pending",
-    description: "New messages need attention",
-    href: "/inbox",
-  },
-  {
-    icon: CalendarDays,
-    title: "2 memberships renewing",
-    description: "Due in the next 24 hours",
-    href: "/members",
-  },
+const NOTIFICATION_PAGE_SIZE = 10;
+const NOTIFICATION_POLL_INTERVAL_MS = 60_000;
+const NOTIFICATION_ROLES: Array<AuthUser["role"]> = [
+  "CRM_OWNER",
+  "ORGANIZATION_OWNER",
+  "BRANCH_ADMIN",
+  "RECEPTIONIST",
 ];
 
 export function AppShell({ children, user }: AppShellProps) {
@@ -119,6 +121,20 @@ export function AppShell({ children, user }: AppShellProps) {
   const [isBranchOpen, setIsBranchOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [notificationItems, setNotificationItems] = useState<NotificationItem[]>([]);
+  const [notificationPage, setNotificationPage] = useState(1);
+  const [notificationTotalPages, setNotificationTotalPages] = useState(0);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
+  const [isNotificationsLoading, setIsNotificationsLoading] = useState(false);
+  const [isMoreNotificationsLoading, setIsMoreNotificationsLoading] = useState(false);
+  const [isUnreadCountLoading, setIsUnreadCountLoading] = useState(false);
+  const [markingNotificationId, setMarkingNotificationId] = useState<string | null>(null);
+  const [isMarkingAllNotifications, setIsMarkingAllNotifications] = useState(false);
+  const notificationPanelRef = useRef<HTMLDivElement>(null);
+  const notificationButtonRef = useRef<HTMLButtonElement>(null);
+  const notificationCountRequestRef = useRef(false);
+  const notificationListRequestRef = useRef(false);
   const today = new Intl.DateTimeFormat("en-IN", {
     day: "2-digit",
     month: "short",
@@ -126,7 +142,7 @@ export function AppShell({ children, user }: AppShellProps) {
     weekday: "short",
   }).format(new Date());
   const selectedBranch = branches.find((branch) => branch.id === selectedBranchId);
-  const notifications = useMemo(() => fallbackNotifications, []);
+  const canUseNotifications = shellUser ? NOTIFICATION_ROLES.includes(shellUser.role) : false;
   const visibleSearchItems = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return [];
@@ -238,8 +254,192 @@ export function AppShell({ children, user }: AppShellProps) {
     };
   }, [router]);
 
+  const handleNotificationAuthLoss = useCallback(() => {
+    clearSession();
+    setShellUser(null);
+    setNotificationItems([]);
+    setUnreadNotificationCount(0);
+    setIsNotificationsOpen(false);
+    router.replace("/");
+  }, [router]);
+
+  const loadUnreadCount = useCallback(async (background = false) => {
+    const token = getAccessToken();
+    if (!token || !canUseNotifications || notificationCountRequestRef.current) return;
+    notificationCountRequestRef.current = true;
+    if (!background) setIsUnreadCountLoading(true);
+    try {
+      const result = await getUnreadNotificationCount(token);
+      setUnreadNotificationCount(result.unreadCount);
+    } catch (apiError) {
+      if (apiError instanceof NotificationApiError && apiError.status === 401) {
+        handleNotificationAuthLoss();
+      }
+    } finally {
+      notificationCountRequestRef.current = false;
+      if (!background) setIsUnreadCountLoading(false);
+    }
+  }, [canUseNotifications, handleNotificationAuthLoss]);
+
+  const loadNotificationsPage = useCallback(async (page: number, mode: "replace" | "append") => {
+    const token = getAccessToken();
+    if (!token || !canUseNotifications || notificationListRequestRef.current) return;
+    notificationListRequestRef.current = true;
+    setNotificationError(null);
+    if (mode === "replace") {
+      setIsNotificationsLoading(true);
+    } else {
+      setIsMoreNotificationsLoading(true);
+    }
+    try {
+      const result = await listNotifications(token, {
+        page,
+        limit: NOTIFICATION_PAGE_SIZE,
+      });
+      setNotificationPage(result.meta.page);
+      setNotificationTotalPages(result.meta.totalPages);
+      setNotificationItems((current) => {
+        if (mode === "replace") return result.data;
+        const seen = new Set(current.map((notification) => notification.id));
+        return [
+          ...current,
+          ...result.data.filter((notification) => !seen.has(notification.id)),
+        ];
+      });
+    } catch (apiError) {
+      if (apiError instanceof NotificationApiError && apiError.status === 401) {
+        handleNotificationAuthLoss();
+        return;
+      }
+      setNotificationError(apiError instanceof Error ? apiError.message : "Unable to load notifications.");
+    } finally {
+      notificationListRequestRef.current = false;
+      setIsNotificationsLoading(false);
+      setIsMoreNotificationsLoading(false);
+    }
+  }, [canUseNotifications, handleNotificationAuthLoss]);
+
+  const refreshNotifications = useCallback(() => {
+    void loadUnreadCount(false);
+    void loadNotificationsPage(1, "replace");
+  }, [loadNotificationsPage, loadUnreadCount]);
+
+  useEffect(() => {
+    if (!canUseNotifications) return;
+
+    const initialRequestId = window.setTimeout(() => {
+      void loadUnreadCount(true);
+    }, 0);
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadUnreadCount(true);
+    }, NOTIFICATION_POLL_INTERVAL_MS);
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") void loadUnreadCount(true);
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearTimeout(initialRequestId);
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [canUseNotifications, loadUnreadCount]);
+
+  useEffect(() => {
+    if (!isNotificationsOpen) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (notificationPanelRef.current?.contains(target)) return;
+      if (notificationButtonRef.current?.contains(target)) return;
+      setIsNotificationsOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsNotificationsOpen(false);
+        notificationButtonRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isNotificationsOpen]);
+
+  async function markOneNotificationRead(notification: NotificationItem) {
+    if (notification.readAt || markingNotificationId) return;
+    const token = getAccessToken();
+    if (!token) {
+      handleNotificationAuthLoss();
+      return;
+    }
+    setMarkingNotificationId(notification.id);
+    setNotificationError(null);
+    try {
+      const updatedNotification = await markNotificationRead(token, notification.id);
+      setNotificationItems((current) =>
+        current.map((item) => item.id === updatedNotification.id ? updatedNotification : item),
+      );
+      await Promise.all([loadUnreadCount(false), loadNotificationsPage(1, "replace")]);
+    } catch (apiError) {
+      if (apiError instanceof NotificationApiError && apiError.status === 401) {
+        handleNotificationAuthLoss();
+        return;
+      }
+      setNotificationError(apiError instanceof Error ? apiError.message : "Unable to mark notification as read.");
+    } finally {
+      setMarkingNotificationId(null);
+    }
+  }
+
+  async function markEveryNotificationRead() {
+    if (isMarkingAllNotifications || unreadNotificationCount <= 0) return;
+    const token = getAccessToken();
+    if (!token) {
+      handleNotificationAuthLoss();
+      return;
+    }
+    setIsMarkingAllNotifications(true);
+    setNotificationError(null);
+    try {
+      await markAllNotificationsRead(token);
+      const readAt = new Date().toISOString();
+      setNotificationItems((current) =>
+        current.map((notification) =>
+          notification.readAt ? notification : { ...notification, readAt },
+        ),
+      );
+      await Promise.all([loadUnreadCount(false), loadNotificationsPage(1, "replace")]);
+    } catch (apiError) {
+      if (apiError instanceof NotificationApiError && apiError.status === 401) {
+        handleNotificationAuthLoss();
+        return;
+      }
+      setNotificationError(apiError instanceof Error ? apiError.message : "Unable to mark notifications as read.");
+    } finally {
+      setIsMarkingAllNotifications(false);
+    }
+  }
+
+  function toggleNotifications() {
+    if (!canUseNotifications) return;
+    const nextOpen = !isNotificationsOpen;
+    setIsNotificationsOpen(nextOpen);
+    if (nextOpen) refreshNotifications();
+  }
+
   function logout() {
     clearSession();
+    setShellUser(null);
+    setNotificationItems([]);
+    setUnreadNotificationCount(0);
+    setIsNotificationsOpen(false);
     router.push("/");
   }
 
@@ -425,25 +625,45 @@ export function AppShell({ children, user }: AppShellProps) {
               {today}
             </Button>
             <div className="relative">
-              <button
-                aria-label="Notifications"
-                className="relative grid size-10 place-items-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] shadow-[var(--shadow-xs)]"
-                onClick={() => setIsNotificationsOpen((value) => !value)}
-                type="button"
-              >
-                <Bell className="size-[var(--icon-sm)]" />
-                <span className="absolute -right-1 -top-1 grid size-5 place-items-center rounded-full bg-[var(--color-danger)] text-[10px] font-bold text-[var(--color-text-inverse)]">
-                  {notifications.length}
-                </span>
-              </button>
-              {isNotificationsOpen ? (
-                <NotificationsMenu
-                  notifications={notifications}
-                  onSelect={(href) => {
-                    setIsNotificationsOpen(false);
-                    router.push(href);
-                  }}
-                />
+              {canUseNotifications ? (
+                <>
+                  <button
+                    ref={notificationButtonRef}
+                    aria-expanded={isNotificationsOpen}
+                    aria-label={`Notifications, ${unreadNotificationCount} unread`}
+                    className="relative grid size-10 place-items-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] shadow-[var(--shadow-xs)] hover:bg-[var(--color-surface-hover)]"
+                    onClick={toggleNotifications}
+                    type="button"
+                  >
+                    {isUnreadCountLoading ? (
+                      <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+                    ) : (
+                      <Bell className="size-[var(--icon-sm)]" />
+                    )}
+                    {unreadNotificationCount > 0 ? (
+                      <span className="absolute -right-1 -top-1 grid min-h-5 min-w-5 place-items-center rounded-full bg-[var(--color-danger)] px-1 text-[10px] font-bold leading-none text-[var(--color-text-inverse)]">
+                        {unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}
+                      </span>
+                    ) : null}
+                  </button>
+                  {isNotificationsOpen ? (
+                    <NotificationsMenu
+                      ref={notificationPanelRef}
+                      error={notificationError}
+                      hasMore={notificationPage < notificationTotalPages}
+                      isLoading={isNotificationsLoading}
+                      isLoadingMore={isMoreNotificationsLoading}
+                      isMarkingAll={isMarkingAllNotifications}
+                      markingNotificationId={markingNotificationId}
+                      notifications={notificationItems}
+                      onLoadMore={() => void loadNotificationsPage(notificationPage + 1, "append")}
+                      onMarkAllRead={() => void markEveryNotificationRead()}
+                      onMarkRead={(notification) => void markOneNotificationRead(notification)}
+                      onRetry={refreshNotifications}
+                      unreadCount={unreadNotificationCount}
+                    />
+                  ) : null}
+                </>
               ) : null}
             </div>
             <button
@@ -575,48 +795,207 @@ function SearchIcon({ type }: { type: SearchItem["type"] }) {
   );
 }
 
-function NotificationsMenu({
+const NotificationsMenu = forwardRef<HTMLDivElement, {
+  error: string | null;
+  hasMore: boolean;
+  isLoading: boolean;
+  isLoadingMore: boolean;
+  isMarkingAll: boolean;
+  markingNotificationId: string | null;
+  notifications: NotificationItem[];
+  onLoadMore: () => void;
+  onMarkAllRead: () => void;
+  onMarkRead: (notification: NotificationItem) => void;
+  onRetry: () => void;
+  unreadCount: number;
+}>(function NotificationsMenu({
+  error,
+  hasMore,
+  isLoading,
+  isLoadingMore,
+  isMarkingAll,
+  markingNotificationId,
   notifications,
-  onSelect,
-}: {
-  notifications: typeof fallbackNotifications;
-  onSelect: (href: string) => void;
-}) {
+  onLoadMore,
+  onMarkAllRead,
+  onMarkRead,
+  onRetry,
+  unreadCount,
+}, ref) {
   return (
-    <div className="absolute right-0 top-[calc(100%+0.5rem)] z-[var(--z-dropdown)] w-80 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
-      <div className="flex items-center justify-between border-b border-[var(--color-divider)] px-4 py-3">
-        <p className="text-sm font-bold text-[var(--color-text)]">
-          Notifications
-        </p>
-        <span className="rounded-full bg-[var(--red-100)] px-2 py-0.5 text-xs font-bold text-[var(--color-danger)]">
-          {notifications.length}
-        </span>
-      </div>
-      {notifications.map((notification) => {
-        const Icon = notification.icon;
-        return (
+    <div
+      ref={ref}
+      aria-label="Notifications"
+      className="absolute right-0 top-[calc(100%+0.5rem)] z-[var(--z-dropdown)] w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]"
+      role="region"
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--color-divider)] px-4 py-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-bold text-[var(--color-text)]">
+            Notifications
+          </p>
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            {unreadCount} unread
+          </p>
+        </div>
+        {unreadCount > 0 ? (
           <button
-            className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-[var(--color-surface-hover)]"
-            key={notification.title}
-            onClick={() => onSelect(notification.href)}
+            className="inline-flex h-8 items-center gap-2 rounded-[var(--radius-md)] px-2 text-xs font-semibold text-[var(--color-primary)] hover:bg-[var(--color-primary-subtle)] disabled:cursor-not-allowed disabled:text-[var(--color-text-muted)]"
+            disabled={isMarkingAll}
+            onClick={onMarkAllRead}
             type="button"
           >
-            <span className="grid size-9 place-items-center rounded-[var(--radius-full)] bg-[var(--blue-100)] text-[var(--color-primary)]">
-              <Icon className="size-[var(--icon-sm)]" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-[var(--color-text)]">
-                {notification.title}
-              </span>
-              <span className="block text-xs text-[var(--color-text-secondary)]">
-                {notification.description}
-              </span>
-            </span>
+            {isMarkingAll ? <Loader2 className="size-3 animate-spin" /> : <CheckCheck className="size-3" />}
+            Mark all read
           </button>
-        );
-      })}
+        ) : null}
+      </div>
+
+      <div className="max-h-[min(32rem,calc(100dvh-7rem))] overflow-y-auto">
+        {error ? (
+          <div className="grid gap-3 px-4 py-6 text-sm">
+            <p className="font-medium text-[var(--color-danger)]" role="alert">
+              {error}
+            </p>
+            <Button className="w-fit gap-2" onClick={onRetry} variant="secondary">
+              <RefreshCw className="size-[var(--icon-sm)]" />
+              Retry
+            </Button>
+          </div>
+        ) : null}
+
+        {isLoading ? (
+          <div className="flex items-center gap-2 px-4 py-6 text-sm text-[var(--color-text-secondary)]">
+            <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+            Loading notifications...
+          </div>
+        ) : null}
+
+        {!isLoading && !error && notifications.length === 0 ? (
+          <div className="px-4 py-8 text-sm text-[var(--color-text-secondary)]">
+            No notifications
+          </div>
+        ) : null}
+
+        {!isLoading && !error && notifications.length > 0 ? (
+          <div className="divide-y divide-[var(--color-divider)]">
+            {notifications.map((notification) => (
+              <NotificationRow
+                key={notification.id}
+                isMarking={markingNotificationId === notification.id}
+                notification={notification}
+                onMarkRead={onMarkRead}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {!isLoading && !error && hasMore ? (
+          <div className="border-t border-[var(--color-divider)] px-4 py-3">
+            <Button
+              className="w-full gap-2"
+              disabled={isLoadingMore}
+              onClick={onLoadMore}
+              variant="secondary"
+            >
+              {isLoadingMore ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : null}
+              Load more
+            </Button>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
+});
+
+function NotificationRow({
+  isMarking,
+  notification,
+  onMarkRead,
+}: {
+  isMarking: boolean;
+  notification: NotificationItem;
+  onMarkRead: (notification: NotificationItem) => void;
+}) {
+  const isUnread = notification.readAt === null;
+
+  return (
+    <div className="flex items-start gap-3 px-4 py-3 text-left">
+      <span className={cn(
+        "mt-0.5 grid size-9 shrink-0 place-items-center rounded-[var(--radius-full)]",
+        isUnread
+          ? "bg-[var(--blue-100)] text-[var(--color-primary)]"
+          : "bg-[var(--color-surface-muted)] text-[var(--color-text-muted)]",
+      )}>
+        <CalendarDays className="size-[var(--icon-sm)]" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-[var(--color-text)]">
+              {notificationTitle(notification)}
+            </p>
+            <p className="mt-0.5 text-xs leading-5 text-[var(--color-text-secondary)]">
+              {notificationDescription(notification)}
+            </p>
+          </div>
+          {isUnread ? (
+            <span className="mt-1 size-2 shrink-0 rounded-full bg-[var(--color-danger)]" aria-label="Unread notification" />
+          ) : null}
+        </div>
+        <p className="mt-2 text-xs text-[var(--color-text-muted)]">
+          Scheduled {formatDateTime(notification.scheduledFor)}
+        </p>
+        {isUnread ? (
+          <button
+            className="mt-2 inline-flex h-8 items-center gap-2 rounded-[var(--radius-md)] px-2 text-xs font-semibold text-[var(--color-primary)] hover:bg-[var(--color-primary-subtle)] disabled:cursor-not-allowed disabled:text-[var(--color-text-muted)]"
+            disabled={isMarking}
+            onClick={() => onMarkRead(notification)}
+            type="button"
+          >
+            {isMarking ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
+            Mark read
+          </button>
+        ) : (
+          <p className="mt-2 text-xs text-[var(--color-text-muted)]">
+            Read {formatDateTime(notification.readAt)}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function notificationTitle(notification: NotificationItem) {
+  const leadName = notification.lead?.fullName || "Lead follow-up";
+  return notification.type === "LEAD_FOLLOW_UP_MORNING"
+    ? `Morning follow-up reminder for ${leadName}`
+    : `Follow-up due for ${leadName}`;
+}
+
+function notificationDescription(notification: NotificationItem) {
+  const channel = notification.followUp?.channel
+    ? formatRole(notification.followUp.channel)
+    : "Follow-up";
+  const status = notification.followUp?.status
+    ? formatRole(notification.followUp.status)
+    : "scheduled";
+  const followUpTime = notification.followUp?.scheduledAt
+    ? formatDateTime(notification.followUp.scheduledAt)
+    : formatDateTime(notification.scheduledFor);
+  return `${channel} ${status.toLowerCase()} for ${followUpTime}`;
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) return "unknown time";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown time";
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function UserMenu({
