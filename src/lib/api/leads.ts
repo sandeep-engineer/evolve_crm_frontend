@@ -47,6 +47,23 @@ export type LeadCommunicationChannel =
   | "EMAIL"
   | "IN_PERSON";
 
+export type LeadFollowUpStatus =
+  | "PENDING"
+  | "COMPLETED"
+  | "RESCHEDULED"
+  | "CANCELLED";
+
+export type LeadContactOutcome =
+  | "INTERESTED"
+  | "NEEDS_TIME"
+  | "CALLBACK_REQUESTED"
+  | "NO_ANSWER"
+  | "UNREACHABLE"
+  | "VISIT_PLANNED"
+  | "TRIAL_REQUESTED"
+  | "READY_TO_JOIN"
+  | "NOT_INTERESTED";
+
 export type LeadTimelineEventType =
   | "LEAD_CREATED"
   | "LEAD_PROFILE_UPDATED"
@@ -255,6 +272,107 @@ export type RecordLeadVisitRequest = {
   nextActionNote?: string | null;
 };
 
+export type LeadFollowUpScheduleRequest = {
+  scheduledAt: string;
+  channel: LeadCommunicationChannel;
+  reasonDetails: string;
+  assignedUserId?: string | null;
+};
+
+export type ScheduleLeadFollowUpRequest = LeadFollowUpScheduleRequest;
+
+export type CompleteLeadFollowUpRequest = {
+  channel: LeadCommunicationChannel;
+  outcome: LeadContactOutcome;
+  notes: string;
+  nextFollowUp?: LeadFollowUpScheduleRequest;
+};
+
+export type RescheduleLeadFollowUpRequest = {
+  scheduledAt: string;
+  reason: string;
+};
+
+export type CancelLeadFollowUpRequest = {
+  reason: string;
+};
+
+export type RecordLeadContactRequest = {
+  channel: LeadCommunicationChannel;
+  outcome: LeadContactOutcome;
+  notes: string;
+  nextFollowUp?: LeadFollowUpScheduleRequest;
+};
+
+export type LeadFollowUpSummary = {
+  id: string;
+  leadId: string;
+  branchId: string;
+  scheduledAt: string;
+  channel: LeadCommunicationChannel;
+  reasonDetails: string;
+  status: LeadFollowUpStatus;
+  isOverdue: boolean;
+  assignedUser: Pick<SafeAssignedUserSummary, "id" | "name"> | null;
+  createdByUser: Pick<SafeAssignedUserSummary, "id" | "name"> | null;
+  updatedByUser: Pick<SafeAssignedUserSummary, "id" | "name"> | null;
+  completedByUser: Pick<SafeAssignedUserSummary, "id" | "name"> | null;
+  completedAt: string | null;
+  cancelledByUser: Pick<SafeAssignedUserSummary, "id" | "name"> | null;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
+  rescheduledByUser: Pick<SafeAssignedUserSummary, "id" | "name"> | null;
+  rescheduledAt: string | null;
+  rescheduleReason: string | null;
+  replacesFollowUpId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LeadFollowUpDetail = LeadFollowUpSummary;
+
+export type LeadContactSummary = {
+  id: string;
+  leadId: string;
+  branchId: string;
+  contactedAt: string;
+  channel: LeadCommunicationChannel;
+  outcome: LeadContactOutcome;
+  notes: string;
+  completedFollowUpId: string | null;
+  actorUser: Pick<SafeAssignedUserSummary, "id" | "name"> | null;
+  createdAt: string;
+};
+
+export type LeadContactDetail = LeadContactSummary;
+
+export type LeadFollowUpsQuery = {
+  page?: number;
+  limit?: number;
+  status?: LeadFollowUpStatus;
+  assignedUserId?: string;
+  scheduledFrom?: string;
+  scheduledTo?: string;
+  overdueOnly?: boolean;
+};
+
+export type LeadContactsQuery = {
+  page?: number;
+  limit?: number;
+  channel?: LeadCommunicationChannel;
+  outcome?: LeadContactOutcome;
+};
+
+export type PaginatedLeadFollowUps = {
+  data: LeadFollowUpSummary[];
+  meta: PaginationMeta;
+};
+
+export type PaginatedLeadContacts = {
+  data: LeadContactSummary[];
+  meta: PaginationMeta;
+};
+
 export type LeadTimelineActor = SafeAssignedUserSummary;
 
 export type LeadTimelineMetadata = Record<string, unknown>;
@@ -377,7 +495,7 @@ async function request<T>(
   }
 }
 
-function queryString(query: Record<string, string | number | null | undefined>) {
+function queryString(query: Record<string, string | number | boolean | null | undefined>) {
   const params = new URLSearchParams();
   Object.entries(query).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
@@ -485,4 +603,120 @@ export function recordLeadVisit(
     body: JSON.stringify(payload),
     method: "POST",
   });
+}
+
+export function scheduleLeadFollowUp(
+  token: string,
+  leadId: string,
+  payload: ScheduleLeadFollowUpRequest,
+) {
+  return request<LeadFollowUpDetail>(token, `/leads/${encodeURIComponent(leadId)}/follow-ups`, {
+    body: JSON.stringify(payload),
+    method: "POST",
+  });
+}
+
+export function listLeadFollowUps(
+  token: string,
+  leadId: string,
+  query: LeadFollowUpsQuery = {},
+) {
+  const suffix = queryString(query);
+  return request<PaginatedLeadFollowUps>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/follow-ups${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+export function getLeadFollowUpDetail(
+  token: string,
+  leadId: string,
+  followUpId: string,
+) {
+  return request<LeadFollowUpDetail>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/follow-ups/${encodeURIComponent(followUpId)}`,
+  );
+}
+
+export function completeLeadFollowUp(
+  token: string,
+  leadId: string,
+  followUpId: string,
+  payload: CompleteLeadFollowUpRequest,
+) {
+  return request<LeadContactDetail>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/follow-ups/${encodeURIComponent(followUpId)}/complete`,
+    {
+      body: JSON.stringify(payload),
+      method: "POST",
+    },
+  );
+}
+
+export function rescheduleLeadFollowUp(
+  token: string,
+  leadId: string,
+  followUpId: string,
+  payload: RescheduleLeadFollowUpRequest,
+) {
+  return request<LeadFollowUpDetail>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/follow-ups/${encodeURIComponent(followUpId)}/reschedule`,
+    {
+      body: JSON.stringify(payload),
+      method: "POST",
+    },
+  );
+}
+
+export function cancelLeadFollowUp(
+  token: string,
+  leadId: string,
+  followUpId: string,
+  payload: CancelLeadFollowUpRequest,
+) {
+  return request<LeadFollowUpDetail>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/follow-ups/${encodeURIComponent(followUpId)}/cancel`,
+    {
+      body: JSON.stringify(payload),
+      method: "POST",
+    },
+  );
+}
+
+export function recordLeadContact(
+  token: string,
+  leadId: string,
+  payload: RecordLeadContactRequest,
+) {
+  return request<LeadContactDetail>(token, `/leads/${encodeURIComponent(leadId)}/contacts`, {
+    body: JSON.stringify(payload),
+    method: "POST",
+  });
+}
+
+export function listLeadContacts(
+  token: string,
+  leadId: string,
+  query: LeadContactsQuery = {},
+) {
+  const suffix = queryString(query);
+  return request<PaginatedLeadContacts>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/contacts${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+export function getLeadContactDetail(
+  token: string,
+  leadId: string,
+  contactId: string,
+) {
+  return request<LeadContactDetail>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/contacts/${encodeURIComponent(contactId)}`,
+  );
 }

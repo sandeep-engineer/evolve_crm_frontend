@@ -4,7 +4,10 @@ import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  Ban,
   CalendarClock,
+  CalendarPlus,
+  CheckCircle,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -14,8 +17,10 @@ import {
   History,
   Loader2,
   Pencil,
+  PhoneCall,
   Plus,
   RefreshCw,
+  RotateCw,
   Save,
   Search,
   ShieldAlert,
@@ -39,24 +44,42 @@ import { getBatches, type Batch } from "@/lib/api/batches";
 import { getBranches, type Branch } from "@/lib/api/branches";
 import { getGoals, type Goal } from "@/lib/api/goals";
 import {
+  cancelLeadFollowUp,
+  completeLeadFollowUp,
   createLeadForBranch,
+  getLeadContactDetail,
+  getLeadFollowUpDetail,
   getLeadTimeline,
   getLeadVisitDetail,
   getLeadDetail,
   LeadApiError,
   LeadPhoneConflictError,
+  listLeadContacts,
+  listLeadFollowUps,
   listLeadVisits,
   listLeadAssignees,
   listLeads,
+  recordLeadContact,
   recordLeadVisit,
+  rescheduleLeadFollowUp,
+  scheduleLeadFollowUp,
   updateLeadAssignment,
   updateLeadProfile,
   type BatchTypePref,
+  type CancelLeadFollowUpRequest,
+  type CompleteLeadFollowUpRequest,
   type CreateLeadRequest,
+  type LeadContactDetail,
+  type LeadContactOutcome,
+  type LeadContactSummary,
   type LeadAssigneeOption,
   type LeadCommunicationChannel,
   type LeadCurrentIntent,
   type LeadDetail,
+  type LeadFollowUpDetail,
+  type LeadFollowUpScheduleRequest,
+  type LeadFollowUpStatus,
+  type LeadFollowUpSummary,
   type LeadSource,
   type LeadStage,
   type LeadStatus,
@@ -67,6 +90,9 @@ import {
   type LeadVisitSummary,
   type PaginationMeta,
   type RecordLeadVisitRequest,
+  type RecordLeadContactRequest,
+  type RescheduleLeadFollowUpRequest,
+  type ScheduleLeadFollowUpRequest,
   type UpdateLeadRequest,
 } from "@/lib/api/leads";
 import { getOrganizations, type Organization } from "@/lib/api/organizations";
@@ -107,7 +133,7 @@ type FilterState = {
   status: LeadStatus | "";
 };
 
-type LeadProfileTab = "profile" | "timeline" | "visits";
+type LeadProfileTab = "profile" | "timeline" | "visits" | "followups" | "contacts";
 
 type VisitFormState = {
   discussion: string;
@@ -118,6 +144,42 @@ type VisitFormState = {
   preferredEndTime: string;
   nextActionNote: string;
 };
+
+type FollowUpFormState = {
+  scheduledDate: string;
+  scheduledTime: string;
+  channel: LeadCommunicationChannel;
+  reasonDetails: string;
+  assignedUserId: string;
+};
+
+type CompleteFollowUpFormState = {
+  channel: LeadCommunicationChannel;
+  outcome: LeadContactOutcome;
+  notes: string;
+  includeNextFollowUp: boolean;
+  nextFollowUp: FollowUpFormState;
+};
+
+type RescheduleFollowUpFormState = {
+  scheduledDate: string;
+  scheduledTime: string;
+  reason: string;
+};
+
+type CancelFollowUpFormState = {
+  reason: string;
+};
+
+type ContactFormState = {
+  channel: LeadCommunicationChannel;
+  outcome: LeadContactOutcome;
+  notes: string;
+  includeNextFollowUp: boolean;
+  nextFollowUp: FollowUpFormState;
+};
+
+type FollowUpAction = "complete" | "reschedule" | "cancel";
 
 const emptyForm: LeadFormState = {
   alternatePhone: "",
@@ -160,6 +222,40 @@ const emptyVisitForm: VisitFormState = {
   preferredStartTime: "",
   preferredEndTime: "",
   nextActionNote: "",
+};
+
+const emptyFollowUpForm: FollowUpFormState = {
+  scheduledDate: "",
+  scheduledTime: "",
+  channel: "PHONE_CALL",
+  reasonDetails: "",
+  assignedUserId: "",
+};
+
+const emptyCompleteFollowUpForm: CompleteFollowUpFormState = {
+  channel: "PHONE_CALL",
+  outcome: "INTERESTED",
+  notes: "",
+  includeNextFollowUp: false,
+  nextFollowUp: emptyFollowUpForm,
+};
+
+const emptyRescheduleFollowUpForm: RescheduleFollowUpFormState = {
+  scheduledDate: "",
+  scheduledTime: "",
+  reason: "",
+};
+
+const emptyCancelFollowUpForm: CancelFollowUpFormState = {
+  reason: "",
+};
+
+const emptyContactForm: ContactFormState = {
+  channel: "PHONE_CALL",
+  outcome: "INTERESTED",
+  notes: "",
+  includeNextFollowUp: false,
+  nextFollowUp: emptyFollowUpForm,
 };
 
 const leadSources: Array<{ label: string; value: LeadSource }> = [
@@ -216,6 +312,25 @@ const timelineEventOptions: Array<{ label: string; value: LeadTimelineEventType 
   { label: "Re-engaged", value: "LEAD_REENGAGED" },
   { label: "Archived", value: "LEAD_ARCHIVED" },
   { label: "Reactivated", value: "LEAD_REACTIVATED" },
+];
+
+const followUpStatusOptions: Array<{ label: string; value: LeadFollowUpStatus }> = [
+  { label: "Pending", value: "PENDING" },
+  { label: "Completed", value: "COMPLETED" },
+  { label: "Rescheduled", value: "RESCHEDULED" },
+  { label: "Cancelled", value: "CANCELLED" },
+];
+
+const contactOutcomeOptions: Array<{ label: string; value: LeadContactOutcome }> = [
+  { label: "Interested", value: "INTERESTED" },
+  { label: "Needs time", value: "NEEDS_TIME" },
+  { label: "Callback requested", value: "CALLBACK_REQUESTED" },
+  { label: "No answer", value: "NO_ANSWER" },
+  { label: "Unreachable", value: "UNREACHABLE" },
+  { label: "Visit planned", value: "VISIT_PLANNED" },
+  { label: "Trial requested", value: "TRIAL_REQUESTED" },
+  { label: "Ready to join", value: "READY_TO_JOIN" },
+  { label: "Not interested", value: "NOT_INTERESTED" },
 ];
 
 const preferredChannels: Array<{ label: string; value: LeadCommunicationChannel }> = [
@@ -333,6 +448,56 @@ export function LeadsScreen() {
   const [visitForm, setVisitForm] = useState<VisitFormState>(emptyVisitForm);
   const [visitFormError, setVisitFormError] = useState("");
   const [isRecordingVisit, setIsRecordingVisit] = useState(false);
+  const [followUps, setFollowUps] = useState<LeadFollowUpSummary[]>([]);
+  const [followUpMeta, setFollowUpMeta] = useState<PaginationMeta>({
+    limit: pageSize,
+    page: 1,
+    total: 0,
+    totalPages: 0,
+  });
+  const [followUpPage, setFollowUpPage] = useState(1);
+  const [followUpStatusFilter, setFollowUpStatusFilter] = useState<LeadFollowUpStatus | "">("");
+  const [followUpAssignedFilter, setFollowUpAssignedFilter] = useState("");
+  const [followUpScheduledFrom, setFollowUpScheduledFrom] = useState("");
+  const [followUpScheduledTo, setFollowUpScheduledTo] = useState("");
+  const [followUpOverdueOnly, setFollowUpOverdueOnly] = useState(false);
+  const [isFollowUpsLoading, setIsFollowUpsLoading] = useState(false);
+  const [followUpsError, setFollowUpsError] = useState("");
+  const [followUpDetail, setFollowUpDetail] = useState<LeadFollowUpDetail | null>(null);
+  const [isFollowUpDetailOpen, setIsFollowUpDetailOpen] = useState(false);
+  const [isFollowUpDetailLoading, setIsFollowUpDetailLoading] = useState(false);
+  const [followUpDetailError, setFollowUpDetailError] = useState("");
+  const [isScheduleFollowUpOpen, setIsScheduleFollowUpOpen] = useState(false);
+  const [scheduleFollowUpForm, setScheduleFollowUpForm] = useState<FollowUpFormState>(emptyFollowUpForm);
+  const [scheduleFollowUpError, setScheduleFollowUpError] = useState("");
+  const [isSchedulingFollowUp, setIsSchedulingFollowUp] = useState(false);
+  const [followUpAction, setFollowUpAction] = useState<FollowUpAction | null>(null);
+  const [actionFollowUp, setActionFollowUp] = useState<LeadFollowUpSummary | null>(null);
+  const [completeFollowUpForm, setCompleteFollowUpForm] = useState<CompleteFollowUpFormState>(emptyCompleteFollowUpForm);
+  const [rescheduleFollowUpForm, setRescheduleFollowUpForm] = useState<RescheduleFollowUpFormState>(emptyRescheduleFollowUpForm);
+  const [cancelFollowUpForm, setCancelFollowUpForm] = useState<CancelFollowUpFormState>(emptyCancelFollowUpForm);
+  const [followUpActionError, setFollowUpActionError] = useState("");
+  const [isSubmittingFollowUpAction, setIsSubmittingFollowUpAction] = useState(false);
+  const [contacts, setContacts] = useState<LeadContactSummary[]>([]);
+  const [contactMeta, setContactMeta] = useState<PaginationMeta>({
+    limit: pageSize,
+    page: 1,
+    total: 0,
+    totalPages: 0,
+  });
+  const [contactPage, setContactPage] = useState(1);
+  const [contactChannelFilter, setContactChannelFilter] = useState<LeadCommunicationChannel | "">("");
+  const [contactOutcomeFilter, setContactOutcomeFilter] = useState<LeadContactOutcome | "">("");
+  const [isContactsLoading, setIsContactsLoading] = useState(false);
+  const [contactsError, setContactsError] = useState("");
+  const [contactDetail, setContactDetail] = useState<LeadContactDetail | null>(null);
+  const [isContactDetailOpen, setIsContactDetailOpen] = useState(false);
+  const [isContactDetailLoading, setIsContactDetailLoading] = useState(false);
+  const [contactDetailError, setContactDetailError] = useState("");
+  const [isRecordContactOpen, setIsRecordContactOpen] = useState(false);
+  const [contactForm, setContactForm] = useState<ContactFormState>(emptyContactForm);
+  const [contactFormError, setContactFormError] = useState("");
+  const [isRecordingContact, setIsRecordingContact] = useState(false);
   const activeProfileLeadIdRef = useRef("");
 
   const resetTimelineState = useCallback(() => {
@@ -358,6 +523,52 @@ export function LeadsScreen() {
     setVisitForm(emptyVisitForm);
     setVisitFormError("");
     setIsRecordingVisit(false);
+  }, []);
+
+  const resetFollowUpState = useCallback(() => {
+    setFollowUps([]);
+    setFollowUpMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+    setFollowUpPage(1);
+    setFollowUpStatusFilter("");
+    setFollowUpAssignedFilter("");
+    setFollowUpScheduledFrom("");
+    setFollowUpScheduledTo("");
+    setFollowUpOverdueOnly(false);
+    setIsFollowUpsLoading(false);
+    setFollowUpsError("");
+    setFollowUpDetail(null);
+    setIsFollowUpDetailOpen(false);
+    setIsFollowUpDetailLoading(false);
+    setFollowUpDetailError("");
+    setIsScheduleFollowUpOpen(false);
+    setScheduleFollowUpForm(emptyFollowUpForm);
+    setScheduleFollowUpError("");
+    setIsSchedulingFollowUp(false);
+    setFollowUpAction(null);
+    setActionFollowUp(null);
+    setCompleteFollowUpForm(emptyCompleteFollowUpForm);
+    setRescheduleFollowUpForm(emptyRescheduleFollowUpForm);
+    setCancelFollowUpForm(emptyCancelFollowUpForm);
+    setFollowUpActionError("");
+    setIsSubmittingFollowUpAction(false);
+  }, []);
+
+  const resetContactState = useCallback(() => {
+    setContacts([]);
+    setContactMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+    setContactPage(1);
+    setContactChannelFilter("");
+    setContactOutcomeFilter("");
+    setIsContactsLoading(false);
+    setContactsError("");
+    setContactDetail(null);
+    setIsContactDetailOpen(false);
+    setIsContactDetailLoading(false);
+    setContactDetailError("");
+    setIsRecordContactOpen(false);
+    setContactForm(emptyContactForm);
+    setContactFormError("");
+    setIsRecordingContact(false);
   }, []);
 
   const canUseLeads = Boolean(user && user.role !== "LEAD_CALLER");
@@ -486,11 +697,20 @@ export function LeadsScreen() {
       setAssignmentError("");
       resetTimelineState();
       resetVisitState();
+      resetFollowUpState();
+      resetContactState();
       setProfileTab("profile");
     }, 0);
 
     return () => window.clearTimeout(timeout);
-  }, [effectiveBranchId, effectiveOrganizationId, resetTimelineState, resetVisitState]);
+  }, [
+    effectiveBranchId,
+    effectiveOrganizationId,
+    resetContactState,
+    resetFollowUpState,
+    resetTimelineState,
+    resetVisitState,
+  ]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -802,6 +1022,8 @@ export function LeadsScreen() {
     setProfileTab("profile");
     resetTimelineState();
     resetVisitState();
+    resetFollowUpState();
+    resetContactState();
     void refreshLeadProfile(leadId);
   }
 
@@ -818,6 +1040,8 @@ export function LeadsScreen() {
     setProfileTab("profile");
     resetTimelineState();
     resetVisitState();
+    resetFollowUpState();
+    resetContactState();
   }
 
   useEffect(() => {
@@ -940,6 +1164,126 @@ export function LeadsScreen() {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [isProfileOpen, loadVisits, profileTab, selectedLeadId]);
+
+  const loadFollowUps = useCallback(async (leadId: string) => {
+    if (!token) return;
+    setIsFollowUpsLoading(true);
+    setFollowUpsError("");
+    try {
+      const result = await listLeadFollowUps(token, leadId, {
+        assignedUserId: followUpAssignedFilter || undefined,
+        limit: pageSize,
+        overdueOnly: followUpOverdueOnly || undefined,
+        page: followUpPage,
+        scheduledFrom: dateFilterValue(followUpScheduledFrom, "start"),
+        scheduledTo: dateFilterValue(followUpScheduledTo, "end"),
+        status: followUpStatusFilter || undefined,
+      });
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setFollowUps(result.data);
+      setFollowUpMeta(result.meta);
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setFollowUps([]);
+      setFollowUpMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+      setFollowUpsError(apiError instanceof Error ? apiError.message : "Unable to load Lead follow-ups.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsFollowUpsLoading(false);
+    }
+  }, [
+    followUpAssignedFilter,
+    followUpOverdueOnly,
+    followUpPage,
+    followUpScheduledFrom,
+    followUpScheduledTo,
+    followUpStatusFilter,
+    router,
+    token,
+  ]);
+
+  useEffect(() => {
+    if (!isProfileOpen || profileTab !== "followups" || !selectedLeadId) return;
+    const leadId = selectedLeadId;
+    const timeout = window.setTimeout(() => {
+      void loadFollowUps(leadId);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [isProfileOpen, loadFollowUps, profileTab, selectedLeadId]);
+
+  const loadContacts = useCallback(async (leadId: string) => {
+    if (!token) return;
+    setIsContactsLoading(true);
+    setContactsError("");
+    try {
+      const result = await listLeadContacts(token, leadId, {
+        channel: contactChannelFilter || undefined,
+        limit: pageSize,
+        outcome: contactOutcomeFilter || undefined,
+        page: contactPage,
+      });
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setContacts(result.data);
+      setContactMeta(result.meta);
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setContacts([]);
+      setContactMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+      setContactsError(apiError instanceof Error ? apiError.message : "Unable to load Lead contact history.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsContactsLoading(false);
+    }
+  }, [contactChannelFilter, contactOutcomeFilter, contactPage, router, token]);
+
+  useEffect(() => {
+    if (!isProfileOpen || profileTab !== "contacts" || !selectedLeadId) return;
+    const leadId = selectedLeadId;
+    const timeout = window.setTimeout(() => {
+      void loadContacts(leadId);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [isProfileOpen, loadContacts, profileTab, selectedLeadId]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setFollowUpPage(1);
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    followUpAssignedFilter,
+    followUpOverdueOnly,
+    followUpScheduledFrom,
+    followUpScheduledTo,
+    followUpStatusFilter,
+  ]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setContactPage(1);
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [contactChannelFilter, contactOutcomeFilter]);
+
+  async function refreshLeadWorkflowViews(leadId: string) {
+    await Promise.all([
+      refreshLeadProfile(leadId),
+      loadLeadList(),
+      loadTimeline(leadId),
+      loadFollowUps(leadId),
+      loadContacts(leadId),
+    ]);
+  }
 
   async function openVisitDetail(visitId: string) {
     if (!token || !selectedLeadId) return;
@@ -1078,6 +1422,204 @@ export function LeadsScreen() {
       setVisitFormError(apiError instanceof Error ? apiError.message : "Unable to record Lead visit.");
     } finally {
       if (activeProfileLeadIdRef.current === leadId) setIsRecordingVisit(false);
+    }
+  }
+
+  async function openFollowUpDetail(followUpId: string) {
+    if (!token || !selectedLeadId) return;
+    const leadId = selectedLeadId;
+    setIsFollowUpDetailOpen(true);
+    setIsFollowUpDetailLoading(true);
+    setFollowUpDetail(null);
+    setFollowUpDetailError("");
+    try {
+      const detail = await getLeadFollowUpDetail(token, leadId, followUpId);
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setFollowUpDetail(detail);
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setFollowUpDetailError(apiError instanceof Error ? apiError.message : "Unable to load Follow-up detail.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsFollowUpDetailLoading(false);
+    }
+  }
+
+  function openScheduleFollowUpDialog() {
+    setScheduleFollowUpForm(defaultFollowUpForm(selectedLead?.preferredChannel ?? null));
+    setScheduleFollowUpError("");
+    setIsScheduleFollowUpOpen(true);
+  }
+
+  function closeScheduleFollowUpDialog() {
+    if (isSchedulingFollowUp) return;
+    setIsScheduleFollowUpOpen(false);
+    setScheduleFollowUpForm(emptyFollowUpForm);
+    setScheduleFollowUpError("");
+  }
+
+  async function submitScheduleFollowUp(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !selectedLead || isSchedulingFollowUp) return;
+    const leadId = selectedLead.id;
+
+    setIsSchedulingFollowUp(true);
+    setScheduleFollowUpError("");
+    try {
+      const payload = buildFollowUpPayload(scheduleFollowUpForm, profileAssignees);
+      await scheduleLeadFollowUp(token, leadId, payload);
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setNotice("Follow-up scheduled.");
+      setIsScheduleFollowUpOpen(false);
+      setScheduleFollowUpForm(emptyFollowUpForm);
+      await refreshLeadWorkflowViews(leadId);
+      setProfileTab("followups");
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setScheduleFollowUpError(apiError instanceof Error ? apiError.message : "Unable to schedule Follow-up.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsSchedulingFollowUp(false);
+    }
+  }
+
+  function openFollowUpActionDialog(action: FollowUpAction, followUp: LeadFollowUpSummary) {
+    setFollowUpAction(action);
+    setActionFollowUp(followUp);
+    setFollowUpActionError("");
+    setCompleteFollowUpForm({
+      ...emptyCompleteFollowUpForm,
+      channel: followUp.channel,
+      nextFollowUp: defaultFollowUpForm(followUp.channel),
+    });
+    setRescheduleFollowUpForm(emptyRescheduleFollowUpForm);
+    setCancelFollowUpForm(emptyCancelFollowUpForm);
+  }
+
+  function closeFollowUpActionDialog() {
+    if (isSubmittingFollowUpAction) return;
+    setFollowUpAction(null);
+    setActionFollowUp(null);
+    setFollowUpActionError("");
+    setCompleteFollowUpForm(emptyCompleteFollowUpForm);
+    setRescheduleFollowUpForm(emptyRescheduleFollowUpForm);
+    setCancelFollowUpForm(emptyCancelFollowUpForm);
+  }
+
+  async function submitFollowUpAction(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !selectedLead || !actionFollowUp || !followUpAction || isSubmittingFollowUpAction) return;
+    const leadId = selectedLead.id;
+
+    setIsSubmittingFollowUpAction(true);
+    setFollowUpActionError("");
+    try {
+      if (followUpAction === "complete") {
+        const payload = buildCompleteFollowUpPayload(completeFollowUpForm, profileAssignees);
+        await completeLeadFollowUp(token, leadId, actionFollowUp.id, payload);
+        setNotice("Follow-up completed and Contact recorded.");
+      } else if (followUpAction === "reschedule") {
+        const payload = buildReschedulePayload(rescheduleFollowUpForm);
+        await rescheduleLeadFollowUp(token, leadId, actionFollowUp.id, payload);
+        setNotice("Follow-up rescheduled.");
+      } else {
+        const payload = buildCancelPayload(cancelFollowUpForm);
+        await cancelLeadFollowUp(token, leadId, actionFollowUp.id, payload);
+        setNotice("Follow-up cancelled.");
+      }
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setFollowUpAction(null);
+      setActionFollowUp(null);
+      setFollowUpActionError("");
+      setCompleteFollowUpForm(emptyCompleteFollowUpForm);
+      setRescheduleFollowUpForm(emptyRescheduleFollowUpForm);
+      setCancelFollowUpForm(emptyCancelFollowUpForm);
+      await refreshLeadWorkflowViews(leadId);
+      setProfileTab(followUpAction === "complete" ? "contacts" : "followups");
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setFollowUpActionError(apiError instanceof Error ? apiError.message : "Unable to update Follow-up.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsSubmittingFollowUpAction(false);
+    }
+  }
+
+  async function openContactDetail(contactId: string) {
+    if (!token || !selectedLeadId) return;
+    const leadId = selectedLeadId;
+    setIsContactDetailOpen(true);
+    setIsContactDetailLoading(true);
+    setContactDetail(null);
+    setContactDetailError("");
+    try {
+      const detail = await getLeadContactDetail(token, leadId, contactId);
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setContactDetail(detail);
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setContactDetailError(apiError instanceof Error ? apiError.message : "Unable to load Contact detail.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsContactDetailLoading(false);
+    }
+  }
+
+  function openRecordContactDialog() {
+    setContactForm(defaultContactForm(selectedLead?.preferredChannel ?? null));
+    setContactFormError("");
+    setIsRecordContactOpen(true);
+  }
+
+  function closeRecordContactDialog() {
+    if (isRecordingContact) return;
+    setIsRecordContactOpen(false);
+    setContactForm(emptyContactForm);
+    setContactFormError("");
+  }
+
+  async function submitContact(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !selectedLead || isRecordingContact) return;
+    const leadId = selectedLead.id;
+
+    setIsRecordingContact(true);
+    setContactFormError("");
+    try {
+      const payload = buildContactPayload(contactForm, profileAssignees);
+      await recordLeadContact(token, leadId, payload);
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setNotice("Contact recorded.");
+      setIsRecordContactOpen(false);
+      setContactForm(emptyContactForm);
+      await refreshLeadWorkflowViews(leadId);
+      setProfileTab("contacts");
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setContactFormError(apiError instanceof Error ? apiError.message : "Unable to record Contact.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsRecordingContact(false);
     }
   }
 
@@ -1523,10 +2065,25 @@ export function LeadsScreen() {
           assignmentError={assignmentError}
           assignmentValue={assignmentValue}
           branchBatches={branchBatches}
+          contactChannelFilter={contactChannelFilter}
+          contactOutcomeFilter={contactOutcomeFilter}
+          contacts={contacts}
+          contactsError={contactsError}
+          contactsMeta={contactMeta}
           editConflict={editConflict}
+          followUpAssignedFilter={followUpAssignedFilter}
+          followUpOverdueOnly={followUpOverdueOnly}
+          followUpScheduledFrom={followUpScheduledFrom}
+          followUpScheduledTo={followUpScheduledTo}
+          followUpStatusFilter={followUpStatusFilter}
+          followUps={followUps}
+          followUpsError={followUpsError}
+          followUpsMeta={followUpMeta}
           form={editForm}
           isAssigneesLoading={isProfileAssigneesLoading}
+          isContactsLoading={isContactsLoading}
           isEditing={isEditingProfile}
+          isFollowUpsLoading={isFollowUpsLoading}
           isLoading={isProfileLoading}
           isSavingAssignment={isUpdatingAssignment}
           isSavingProfile={isUpdatingProfile}
@@ -1543,14 +2100,30 @@ export function LeadsScreen() {
             setEditConflict(null);
             setProfileError("");
           }}
+          onContactChannelFilterChange={setContactChannelFilter}
+          onContactOutcomeFilterChange={setContactOutcomeFilter}
+          onContactPageChange={setContactPage}
+          onContactsRetry={() => selectedLeadId && void loadContacts(selectedLeadId)}
           onEdit={() => setIsEditingProfile(true)}
           onFieldChange={setEditForm}
+          onFollowUpAction={openFollowUpActionDialog}
+          onFollowUpAssignedFilterChange={setFollowUpAssignedFilter}
+          onFollowUpOverdueOnlyChange={setFollowUpOverdueOnly}
+          onFollowUpPageChange={setFollowUpPage}
+          onFollowUpScheduledFromChange={setFollowUpScheduledFrom}
+          onFollowUpScheduledToChange={setFollowUpScheduledTo}
+          onFollowUpStatusFilterChange={setFollowUpStatusFilter}
+          onFollowUpsRetry={() => selectedLeadId && void loadFollowUps(selectedLeadId)}
           onLocateConflict={(conflict) => {
             setSearch(conflict.existingLead?.primaryPhone || conflict.existingLead?.fullName || editForm.primaryPhone);
             setFilters((current) => ({ ...current, stage: "", status: "", source: "" }));
             closeLeadProfile();
           }}
+          onOpenContact={openContactDetail}
+          onOpenFollowUp={openFollowUpDetail}
+          onOpenRecordContact={openRecordContactDialog}
           onOpenRecordVisit={openRecordVisitDialog}
+          onOpenScheduleFollowUp={openScheduleFollowUpDialog}
           onOpenVisit={openVisitDetail}
           onRetry={() => selectedLeadId && void refreshLeadProfile(selectedLeadId)}
           onTabChange={setProfileTab}
@@ -1614,6 +2187,101 @@ export function LeadsScreen() {
           visit={visitDetail}
         />
       </Dialog>
+
+      <Dialog
+        className="max-w-3xl"
+        isOpen={isScheduleFollowUpOpen}
+        onClose={closeScheduleFollowUpDialog}
+        title="Schedule Follow-up"
+      >
+        <ScheduleFollowUpForm
+          assignees={profileAssignees}
+          form={scheduleFollowUpForm}
+          formError={scheduleFollowUpError}
+          isSaving={isSchedulingFollowUp}
+          onCancel={closeScheduleFollowUpDialog}
+          onChange={setScheduleFollowUpForm}
+          onErrorDismiss={() => setScheduleFollowUpError("")}
+          onSubmit={submitScheduleFollowUp}
+        />
+      </Dialog>
+
+      <Dialog
+        className="max-w-3xl"
+        isOpen={Boolean(followUpAction)}
+        onClose={closeFollowUpActionDialog}
+        title={followUpAction ? followUpActionTitle(followUpAction) : "Follow-up"}
+      >
+        <FollowUpActionForm
+          action={followUpAction}
+          assignees={profileAssignees}
+          cancelForm={cancelFollowUpForm}
+          completeForm={completeFollowUpForm}
+          error={followUpActionError}
+          followUp={actionFollowUp}
+          isSaving={isSubmittingFollowUpAction}
+          onCancel={closeFollowUpActionDialog}
+          onCancelFormChange={setCancelFollowUpForm}
+          onCompleteFormChange={setCompleteFollowUpForm}
+          onErrorDismiss={() => setFollowUpActionError("")}
+          onRescheduleFormChange={setRescheduleFollowUpForm}
+          onSubmit={submitFollowUpAction}
+          rescheduleForm={rescheduleFollowUpForm}
+        />
+      </Dialog>
+
+      <Dialog
+        className="max-w-2xl"
+        isOpen={isFollowUpDetailOpen}
+        onClose={() => {
+          setIsFollowUpDetailOpen(false);
+          setFollowUpDetail(null);
+          setFollowUpDetailError("");
+        }}
+        title="Follow-up detail"
+      >
+        <FollowUpDetailDialog
+          error={followUpDetailError}
+          followUp={followUpDetail}
+          isLoading={isFollowUpDetailLoading}
+        />
+      </Dialog>
+
+      <Dialog
+        className="max-w-3xl"
+        isOpen={isRecordContactOpen}
+        onClose={closeRecordContactDialog}
+        title="Record Contact"
+      >
+        <RecordContactForm
+          assignees={profileAssignees}
+          currentUser={user}
+          form={contactForm}
+          formError={contactFormError}
+          isSaving={isRecordingContact}
+          onCancel={closeRecordContactDialog}
+          onChange={setContactForm}
+          onErrorDismiss={() => setContactFormError("")}
+          onSubmit={submitContact}
+        />
+      </Dialog>
+
+      <Dialog
+        className="max-w-2xl"
+        isOpen={isContactDetailOpen}
+        onClose={() => {
+          setIsContactDetailOpen(false);
+          setContactDetail(null);
+          setContactDetailError("");
+        }}
+        title="Contact detail"
+      >
+        <ContactDetailDialog
+          contact={contactDetail}
+          error={contactDetailError}
+          isLoading={isContactDetailLoading}
+        />
+      </Dialog>
     </AppShell>
   );
 }
@@ -1629,10 +2297,25 @@ function LeadProfileDialog({
   assignmentError,
   assignmentValue,
   branchBatches,
+  contactChannelFilter,
+  contactOutcomeFilter,
+  contacts,
+  contactsError,
+  contactsMeta,
   editConflict,
+  followUpAssignedFilter,
+  followUpOverdueOnly,
+  followUpScheduledFrom,
+  followUpScheduledTo,
+  followUpStatusFilter,
+  followUps,
+  followUpsError,
+  followUpsMeta,
   form,
   isAssigneesLoading,
+  isContactsLoading,
   isEditing,
+  isFollowUpsLoading,
   isLoading,
   isSavingAssignment,
   isSavingProfile,
@@ -1643,10 +2326,26 @@ function LeadProfileDialog({
   onAssigneeSearchChange,
   onAssignmentChange,
   onCancelEdit,
+  onContactChannelFilterChange,
+  onContactOutcomeFilterChange,
+  onContactPageChange,
+  onContactsRetry,
   onEdit,
   onFieldChange,
+  onFollowUpAction,
+  onFollowUpAssignedFilterChange,
+  onFollowUpOverdueOnlyChange,
+  onFollowUpPageChange,
+  onFollowUpScheduledFromChange,
+  onFollowUpScheduledToChange,
+  onFollowUpStatusFilterChange,
+  onFollowUpsRetry,
   onLocateConflict,
+  onOpenContact,
+  onOpenFollowUp,
+  onOpenRecordContact,
   onOpenRecordVisit,
+  onOpenScheduleFollowUp,
   onOpenVisit,
   onRetry,
   onTabChange,
@@ -1678,10 +2377,25 @@ function LeadProfileDialog({
   assignmentError: string;
   assignmentValue: string;
   branchBatches: Batch[];
+  contactChannelFilter: LeadCommunicationChannel | "";
+  contactOutcomeFilter: LeadContactOutcome | "";
+  contacts: LeadContactSummary[];
+  contactsError: string;
+  contactsMeta: PaginationMeta;
   editConflict: LeadPhoneConflictError | null;
+  followUpAssignedFilter: string;
+  followUpOverdueOnly: boolean;
+  followUpScheduledFrom: string;
+  followUpScheduledTo: string;
+  followUpStatusFilter: LeadFollowUpStatus | "";
+  followUps: LeadFollowUpSummary[];
+  followUpsError: string;
+  followUpsMeta: PaginationMeta;
   form: LeadFormState;
   isAssigneesLoading: boolean;
+  isContactsLoading: boolean;
   isEditing: boolean;
+  isFollowUpsLoading: boolean;
   isLoading: boolean;
   isSavingAssignment: boolean;
   isSavingProfile: boolean;
@@ -1692,10 +2406,26 @@ function LeadProfileDialog({
   onAssigneeSearchChange: (value: string) => void;
   onAssignmentChange: (value: string) => void;
   onCancelEdit: () => void;
+  onContactChannelFilterChange: (channel: LeadCommunicationChannel | "") => void;
+  onContactOutcomeFilterChange: (outcome: LeadContactOutcome | "") => void;
+  onContactPageChange: (page: number) => void;
+  onContactsRetry: () => void;
   onEdit: () => void;
   onFieldChange: React.Dispatch<React.SetStateAction<LeadFormState>>;
+  onFollowUpAction: (action: FollowUpAction, followUp: LeadFollowUpSummary) => void;
+  onFollowUpAssignedFilterChange: (assignedUserId: string) => void;
+  onFollowUpOverdueOnlyChange: (overdueOnly: boolean) => void;
+  onFollowUpPageChange: (page: number) => void;
+  onFollowUpScheduledFromChange: (value: string) => void;
+  onFollowUpScheduledToChange: (value: string) => void;
+  onFollowUpStatusFilterChange: (status: LeadFollowUpStatus | "") => void;
+  onFollowUpsRetry: () => void;
   onLocateConflict: (conflict: LeadPhoneConflictError) => void;
+  onOpenContact: (contactId: string) => void;
+  onOpenFollowUp: (followUpId: string) => void;
+  onOpenRecordContact: () => void;
   onOpenRecordVisit: () => void;
+  onOpenScheduleFollowUp: () => void;
   onOpenVisit: (visitId: string) => void;
   onRetry: () => void;
   onTabChange: (tab: LeadProfileTab) => void;
@@ -1765,7 +2495,7 @@ function LeadProfileDialog({
         ...assignees,
       ]
     : assignees;
-  const canRecordVisit = lead.stage !== "CONVERTED" && lead.status !== "ARCHIVED";
+  const canRecordActivity = lead.stage !== "CONVERTED" && lead.status !== "ARCHIVED";
 
   return (
     <div className="space-y-[var(--space-5)]">
@@ -1789,9 +2519,29 @@ function LeadProfileDialog({
           <StatusBadge status="pending">{formatEnum(lead.stage)}</StatusBadge>
           <Button
             className="gap-2"
-            disabled={!canRecordVisit}
+            disabled={!canRecordActivity}
+            onClick={onOpenScheduleFollowUp}
+            title={canRecordActivity ? "Schedule Follow-up" : "Follow-ups cannot be scheduled for archived or converted Leads"}
+            variant="secondary"
+          >
+            <CalendarPlus className="size-[var(--icon-sm)]" />
+            Schedule Follow-up
+          </Button>
+          <Button
+            className="gap-2"
+            disabled={!canRecordActivity}
+            onClick={onOpenRecordContact}
+            title={canRecordActivity ? "Record Contact" : "Contacts cannot be recorded for archived or converted Leads"}
+            variant="secondary"
+          >
+            <PhoneCall className="size-[var(--icon-sm)]" />
+            Record Contact
+          </Button>
+          <Button
+            className="gap-2"
+            disabled={!canRecordActivity}
             onClick={onOpenRecordVisit}
-            title={canRecordVisit ? "Record Visit" : "Visits cannot be recorded for archived or converted Leads"}
+            title={canRecordActivity ? "Record Visit" : "Visits cannot be recorded for archived or converted Leads"}
             variant="secondary"
           >
             <CalendarClock className="size-[var(--icon-sm)]" />
@@ -1810,6 +2560,8 @@ function LeadProfileDialog({
         <ProfileTabButton active={profileTab === "profile"} icon={UserCheck} label="Profile" onClick={() => onTabChange("profile")} />
         <ProfileTabButton active={profileTab === "timeline"} icon={History} label="Timeline" onClick={() => onTabChange("timeline")} />
         <ProfileTabButton active={profileTab === "visits"} icon={CalendarClock} label="Visits" onClick={() => onTabChange("visits")} />
+        <ProfileTabButton active={profileTab === "followups"} icon={CalendarPlus} label="Follow-ups" onClick={() => onTabChange("followups")} />
+        <ProfileTabButton active={profileTab === "contacts"} icon={PhoneCall} label="Contacts" onClick={() => onTabChange("contacts")} />
       </div>
 
       {profileTab === "profile" ? (
@@ -1885,6 +2637,46 @@ function LeadProfileDialog({
           onPageChange={onVisitPageChange}
           onRetry={onVisitsRetry}
           visits={visits}
+        />
+      ) : null}
+
+      {profileTab === "followups" ? (
+        <LeadFollowUpsPanel
+          assignedFilter={followUpAssignedFilter}
+          assignees={assignmentOptions}
+          error={followUpsError}
+          followUps={followUps}
+          isLoading={isFollowUpsLoading}
+          meta={followUpsMeta}
+          onAction={onFollowUpAction}
+          onAssignedFilterChange={onFollowUpAssignedFilterChange}
+          onOpenFollowUp={onOpenFollowUp}
+          onOverdueOnlyChange={onFollowUpOverdueOnlyChange}
+          onPageChange={onFollowUpPageChange}
+          onRetry={onFollowUpsRetry}
+          onScheduledFromChange={onFollowUpScheduledFromChange}
+          onScheduledToChange={onFollowUpScheduledToChange}
+          onStatusFilterChange={onFollowUpStatusFilterChange}
+          overdueOnly={followUpOverdueOnly}
+          scheduledFrom={followUpScheduledFrom}
+          scheduledTo={followUpScheduledTo}
+          statusFilter={followUpStatusFilter}
+        />
+      ) : null}
+
+      {profileTab === "contacts" ? (
+        <LeadContactsPanel
+          channelFilter={contactChannelFilter}
+          contacts={contacts}
+          error={contactsError}
+          isLoading={isContactsLoading}
+          meta={contactsMeta}
+          onChannelFilterChange={onContactChannelFilterChange}
+          onOpenContact={onOpenContact}
+          onOutcomeFilterChange={onContactOutcomeFilterChange}
+          onPageChange={onContactPageChange}
+          onRetry={onContactsRetry}
+          outcomeFilter={contactOutcomeFilter}
         />
       ) : null}
     </div>
@@ -2167,6 +2959,275 @@ function LeadVisitsPanel({
   );
 }
 
+function LeadFollowUpsPanel({
+  assignedFilter,
+  assignees,
+  error,
+  followUps,
+  isLoading,
+  meta,
+  onAction,
+  onAssignedFilterChange,
+  onOpenFollowUp,
+  onOverdueOnlyChange,
+  onPageChange,
+  onRetry,
+  onScheduledFromChange,
+  onScheduledToChange,
+  onStatusFilterChange,
+  overdueOnly,
+  scheduledFrom,
+  scheduledTo,
+  statusFilter,
+}: {
+  assignedFilter: string;
+  assignees: LeadAssigneeOption[];
+  error: string;
+  followUps: LeadFollowUpSummary[];
+  isLoading: boolean;
+  meta: PaginationMeta;
+  onAction: (action: FollowUpAction, followUp: LeadFollowUpSummary) => void;
+  onAssignedFilterChange: (assignedUserId: string) => void;
+  onOpenFollowUp: (followUpId: string) => void;
+  onOverdueOnlyChange: (overdueOnly: boolean) => void;
+  onPageChange: (page: number) => void;
+  onRetry: () => void;
+  onScheduledFromChange: (value: string) => void;
+  onScheduledToChange: (value: string) => void;
+  onStatusFilterChange: (status: LeadFollowUpStatus | "") => void;
+  overdueOnly: boolean;
+  scheduledFrom: string;
+  scheduledTo: string;
+  statusFilter: LeadFollowUpStatus | "";
+}) {
+  return (
+    <div className="space-y-[var(--space-4)]" role="tabpanel">
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+          <SelectField
+            label="Status"
+            onChange={(value) => onStatusFilterChange(value as LeadFollowUpStatus | "")}
+            options={[{ label: "All statuses", value: "" }, ...followUpStatusOptions]}
+            value={statusFilter}
+          />
+          <SelectField
+            label="Assigned to"
+            onChange={onAssignedFilterChange}
+            options={[
+              { label: "Anyone", value: "" },
+              ...assignees.map((assignee) => ({
+                label: `${assignee.name} (${formatEnum(assignee.role)})`,
+                value: assignee.userId,
+              })),
+            ]}
+            value={assignedFilter}
+          />
+          <Input
+            label="Scheduled from"
+            onChange={(event) => onScheduledFromChange(event.target.value)}
+            type="date"
+            value={scheduledFrom}
+          />
+          <Input
+            label="Scheduled to"
+            onChange={(event) => onScheduledToChange(event.target.value)}
+            type="date"
+            value={scheduledTo}
+          />
+          <div className="flex items-end gap-3">
+            <label className="flex h-[var(--control-height-lg)] items-center gap-2 text-sm font-semibold text-[var(--color-text)]">
+              <input
+                checked={overdueOnly}
+                onChange={(event) => onOverdueOnlyChange(event.target.checked)}
+                type="checkbox"
+              />
+              Overdue only
+            </label>
+            <Button aria-label="Refresh Follow-ups" disabled={isLoading} onClick={onRetry} variant="secondary">
+              {isLoading ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : <RefreshCw className="size-[var(--icon-sm)]" />}
+            </Button>
+          </div>
+        </div>
+      </div>
+      {error ? (
+        <EmptyPanel actionLabel="Retry" message={error} onAction={onRetry} tone="danger" />
+      ) : isLoading ? (
+        <LoadingPanel label="Loading Lead follow-ups" />
+      ) : followUps.length ? (
+        <div className="space-y-3">
+          {followUps.map((followUp) => (
+            <FollowUpListItem
+              followUp={followUp}
+              key={followUp.id}
+              onAction={onAction}
+              onOpen={() => onOpenFollowUp(followUp.id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <EmptyPanel message="No Follow-ups found for this Lead." />
+      )}
+      <Pagination meta={meta} onPageChange={onPageChange} />
+    </div>
+  );
+}
+
+function FollowUpListItem({
+  followUp,
+  onAction,
+  onOpen,
+}: {
+  followUp: LeadFollowUpSummary;
+  onAction: (action: FollowUpAction, followUp: LeadFollowUpSummary) => void;
+  onOpen: () => void;
+}) {
+  const isPending = followUp.status === "PENDING";
+  return (
+    <article className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-bold text-[var(--color-text)]">{formatDateTime(followUp.scheduledAt)}</p>
+            <StatusBadge status={followUpStatusTone(followUp)}>{formatEnum(followUp.status)}</StatusBadge>
+            {followUp.isOverdue ? <StatusBadge status="lost">Overdue</StatusBadge> : null}
+          </div>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            {formatEnum(followUp.channel)} | Assigned to {followUp.assignedUser?.name ?? "Unassigned"}
+          </p>
+          <p className="mt-2 line-clamp-2 text-sm text-[var(--color-text)]">{followUp.reasonDetails}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button className="gap-2" onClick={onOpen} variant="secondary">
+            <Eye className="size-[var(--icon-sm)]" />
+            View
+          </Button>
+          {isPending ? (
+            <>
+              <Button className="gap-2" onClick={() => onAction("complete", followUp)} variant="secondary">
+                <CheckCircle className="size-[var(--icon-sm)]" />
+                Complete
+              </Button>
+              <Button className="gap-2" onClick={() => onAction("reschedule", followUp)} variant="secondary">
+                <RotateCw className="size-[var(--icon-sm)]" />
+                Reschedule
+              </Button>
+              <Button className="gap-2" onClick={() => onAction("cancel", followUp)} variant="secondary">
+                <Ban className="size-[var(--icon-sm)]" />
+                Cancel
+              </Button>
+            </>
+          ) : null}
+        </div>
+      </div>
+      <dl className="mt-3 grid gap-2 md:grid-cols-3">
+        <VisitDetailItem label="Created by" value={followUp.createdByUser?.name ?? "Unknown user"} />
+        <VisitDetailItem label="Completed" value={formatDateTime(followUp.completedAt)} />
+        <VisitDetailItem label="Updated" value={formatDateTime(followUp.updatedAt)} />
+      </dl>
+    </article>
+  );
+}
+
+function LeadContactsPanel({
+  channelFilter,
+  contacts,
+  error,
+  isLoading,
+  meta,
+  onChannelFilterChange,
+  onOpenContact,
+  onOutcomeFilterChange,
+  onPageChange,
+  onRetry,
+  outcomeFilter,
+}: {
+  channelFilter: LeadCommunicationChannel | "";
+  contacts: LeadContactSummary[];
+  error: string;
+  isLoading: boolean;
+  meta: PaginationMeta;
+  onChannelFilterChange: (channel: LeadCommunicationChannel | "") => void;
+  onOpenContact: (contactId: string) => void;
+  onOutcomeFilterChange: (outcome: LeadContactOutcome | "") => void;
+  onPageChange: (page: number) => void;
+  onRetry: () => void;
+  outcomeFilter: LeadContactOutcome | "";
+}) {
+  return (
+    <div className="space-y-[var(--space-4)]" role="tabpanel">
+      <div className="flex flex-col gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] p-4 md:flex-row md:items-end md:justify-between">
+        <div className="grid flex-1 gap-3 md:grid-cols-2">
+          <SelectField
+            label="Channel"
+            onChange={(value) => onChannelFilterChange(value as LeadCommunicationChannel | "")}
+            options={[{ label: "All channels", value: "" }, ...preferredChannels]}
+            value={channelFilter}
+          />
+          <SelectField
+            label="Outcome"
+            onChange={(value) => onOutcomeFilterChange(value as LeadContactOutcome | "")}
+            options={[{ label: "All outcomes", value: "" }, ...contactOutcomeOptions]}
+            value={outcomeFilter}
+          />
+        </div>
+        <Button className="gap-2" disabled={isLoading} onClick={onRetry} variant="secondary">
+          {isLoading ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : <RefreshCw className="size-[var(--icon-sm)]" />}
+          Refresh
+        </Button>
+      </div>
+      {error ? (
+        <EmptyPanel actionLabel="Retry" message={error} onAction={onRetry} tone="danger" />
+      ) : isLoading ? (
+        <LoadingPanel label="Loading Lead contact history" />
+      ) : contacts.length ? (
+        <div className="space-y-3">
+          {contacts.map((contact) => (
+            <ContactListItem
+              contact={contact}
+              key={contact.id}
+              onOpen={() => onOpenContact(contact.id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <EmptyPanel message="No Contact records found for this Lead." />
+      )}
+      <Pagination meta={meta} onPageChange={onPageChange} />
+    </div>
+  );
+}
+
+function ContactListItem({ contact, onOpen }: { contact: LeadContactSummary; onOpen: () => void }) {
+  return (
+    <article className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-bold text-[var(--color-text)]">{formatDateTime(contact.contactedAt)}</p>
+            <StatusBadge status="active">{formatEnum(contact.outcome)}</StatusBadge>
+          </div>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            {formatEnum(contact.channel)} | Handled by {contact.actorUser?.name ?? "Unknown user"}
+          </p>
+          <p className="mt-2 line-clamp-2 text-sm text-[var(--color-text)]">{contact.notes}</p>
+        </div>
+        <Button className="gap-2" onClick={onOpen} variant="secondary">
+          <Eye className="size-[var(--icon-sm)]" />
+          View
+        </Button>
+      </div>
+      <dl className="mt-3 grid gap-2 md:grid-cols-3">
+        <VisitDetailItem
+          label="From Follow-up"
+          value={contact.completedFollowUpId ? shortId(contact.completedFollowUpId) : "Independent Contact"}
+        />
+        <VisitDetailItem label="Created" value={formatDateTime(contact.createdAt)} />
+        <VisitDetailItem label="Contact ID" value={shortId(contact.id)} />
+      </dl>
+    </article>
+  );
+}
+
 function VisitListItem({ onOpen, visit }: { onOpen: () => void; visit: LeadVisitSummary }) {
   return (
     <article className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
@@ -2189,6 +3250,420 @@ function VisitListItem({ onOpen, visit }: { onOpen: () => void; visit: LeadVisit
         <VisitDetailItem label="Preferred time" value={formatPreferredTime(visit.preferredStartTime, visit.preferredEndTime)} />
       </dl>
     </article>
+  );
+}
+
+function ScheduleFollowUpForm({
+  assignees,
+  form,
+  formError,
+  isSaving,
+  onCancel,
+  onChange,
+  onErrorDismiss,
+  onSubmit,
+}: {
+  assignees: LeadAssigneeOption[];
+  form: FollowUpFormState;
+  formError: string;
+  isSaving: boolean;
+  onCancel: () => void;
+  onChange: React.Dispatch<React.SetStateAction<FollowUpFormState>>;
+  onErrorDismiss: () => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <form className="space-y-[var(--space-5)]" onSubmit={onSubmit}>
+      {formError ? (
+        <Alert tone="danger" onDismiss={onErrorDismiss}>
+          {formError}
+        </Alert>
+      ) : null}
+      <FollowUpFields
+        assignees={assignees}
+        form={form}
+        onChange={onChange}
+        withInitialFocus
+      />
+      <div className="flex justify-end gap-3 border-t border-[var(--color-divider)] pt-[var(--space-4)]">
+        <Button disabled={isSaving} onClick={onCancel} type="button" variant="secondary">
+          Cancel
+        </Button>
+        <Button className="gap-2" disabled={isSaving} type="submit">
+          {isSaving ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : <CalendarPlus className="size-[var(--icon-sm)]" />}
+          Schedule Follow-up
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function FollowUpActionForm({
+  action,
+  assignees,
+  cancelForm,
+  completeForm,
+  error,
+  followUp,
+  isSaving,
+  onCancel,
+  onCancelFormChange,
+  onCompleteFormChange,
+  onErrorDismiss,
+  onRescheduleFormChange,
+  onSubmit,
+  rescheduleForm,
+}: {
+  action: FollowUpAction | null;
+  assignees: LeadAssigneeOption[];
+  cancelForm: CancelFollowUpFormState;
+  completeForm: CompleteFollowUpFormState;
+  error: string;
+  followUp: LeadFollowUpSummary | null;
+  isSaving: boolean;
+  onCancel: () => void;
+  onCancelFormChange: React.Dispatch<React.SetStateAction<CancelFollowUpFormState>>;
+  onCompleteFormChange: React.Dispatch<React.SetStateAction<CompleteFollowUpFormState>>;
+  onErrorDismiss: () => void;
+  onRescheduleFormChange: React.Dispatch<React.SetStateAction<RescheduleFollowUpFormState>>;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  rescheduleForm: RescheduleFollowUpFormState;
+}) {
+  if (!action || !followUp) return <EmptyPanel message="No Follow-up selected." />;
+
+  return (
+    <form className="space-y-[var(--space-5)]" onSubmit={onSubmit}>
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+        {formatDateTime(followUp.scheduledAt)} | {formatEnum(followUp.channel)} | {followUp.reasonDetails}
+      </div>
+      {error ? (
+        <Alert tone="danger" onDismiss={onErrorDismiss}>
+          {error}
+        </Alert>
+      ) : null}
+
+      {action === "complete" ? (
+        <>
+          <div className="grid gap-4 md:grid-cols-2">
+            <SelectField
+              label="Contact channel"
+              onChange={(value) =>
+                onCompleteFormChange((current) => ({
+                  ...current,
+                  channel: value as LeadCommunicationChannel,
+                }))
+              }
+              options={preferredChannels}
+              required
+              value={completeForm.channel}
+            />
+            <SelectField
+              label="Outcome"
+              onChange={(value) =>
+                onCompleteFormChange((current) => ({
+                  ...current,
+                  includeNextFollowUp: value === "CALLBACK_REQUESTED" ? true : current.includeNextFollowUp,
+                  outcome: value as LeadContactOutcome,
+                }))
+              }
+              options={contactOutcomeOptions}
+              required
+              value={completeForm.outcome}
+            />
+          </div>
+          <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+            <span>Contact notes</span>
+            <textarea
+              className="min-h-32 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-disabled)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+              data-dialog-initial-focus
+              maxLength={2000}
+              onChange={(event) => onCompleteFormChange((current) => ({ ...current, notes: event.target.value }))}
+              required
+              value={completeForm.notes}
+            />
+            <span className="text-xs font-normal text-[var(--color-text-muted)]">{completeForm.notes.length}/2000</span>
+          </label>
+          <NextFollowUpFields
+            assignees={assignees}
+            checked={completeForm.includeNextFollowUp}
+            disabled={completeForm.outcome === "CALLBACK_REQUESTED"}
+            followUp={completeForm.nextFollowUp}
+            onCheckedChange={(checked) =>
+              onCompleteFormChange((current) => ({
+                ...current,
+                includeNextFollowUp: checked,
+              }))
+            }
+            onFollowUpChange={(updater) =>
+              onCompleteFormChange((current) => ({
+                ...current,
+                nextFollowUp:
+                  typeof updater === "function"
+                    ? updater(current.nextFollowUp)
+                    : updater,
+              }))
+            }
+            required={completeForm.outcome === "CALLBACK_REQUESTED"}
+          />
+        </>
+      ) : null}
+
+      {action === "reschedule" ? (
+        <div className="grid gap-4 md:grid-cols-2">
+          <Input
+            data-dialog-initial-focus
+            label="New scheduled date"
+            onChange={(event) => onRescheduleFormChange((current) => ({ ...current, scheduledDate: event.target.value }))}
+            required
+            type="date"
+            value={rescheduleForm.scheduledDate}
+          />
+          <Input
+            label="New scheduled time"
+            onChange={(event) => onRescheduleFormChange((current) => ({ ...current, scheduledTime: event.target.value }))}
+            required
+            type="time"
+            value={rescheduleForm.scheduledTime}
+          />
+          <label className="grid gap-2 text-sm font-medium text-[var(--color-text)] md:col-span-2">
+            <span>Reschedule reason</span>
+            <textarea
+              className="min-h-28 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-disabled)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+              maxLength={1000}
+              onChange={(event) => onRescheduleFormChange((current) => ({ ...current, reason: event.target.value }))}
+              required
+              value={rescheduleForm.reason}
+            />
+            <span className="text-xs font-normal text-[var(--color-text-muted)]">{rescheduleForm.reason.length}/1000</span>
+          </label>
+        </div>
+      ) : null}
+
+      {action === "cancel" ? (
+        <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+          <span>Cancellation reason</span>
+          <textarea
+            className="min-h-28 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-disabled)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+            data-dialog-initial-focus
+            maxLength={1000}
+            onChange={(event) => onCancelFormChange({ reason: event.target.value })}
+            required
+            value={cancelForm.reason}
+          />
+          <span className="text-xs font-normal text-[var(--color-text-muted)]">{cancelForm.reason.length}/1000</span>
+        </label>
+      ) : null}
+
+      <div className="flex justify-end gap-3 border-t border-[var(--color-divider)] pt-[var(--space-4)]">
+        <Button disabled={isSaving} onClick={onCancel} type="button" variant="secondary">
+          Cancel
+        </Button>
+        <Button className="gap-2" disabled={isSaving} type="submit">
+          {isSaving ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : followUpActionIcon(action)}
+          {followUpActionTitle(action)}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function RecordContactForm({
+  assignees,
+  currentUser,
+  form,
+  formError,
+  isSaving,
+  onCancel,
+  onChange,
+  onErrorDismiss,
+  onSubmit,
+}: {
+  assignees: LeadAssigneeOption[];
+  currentUser: AuthUser | null;
+  form: ContactFormState;
+  formError: string;
+  isSaving: boolean;
+  onCancel: () => void;
+  onChange: React.Dispatch<React.SetStateAction<ContactFormState>>;
+  onErrorDismiss: () => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <form className="space-y-[var(--space-5)]" onSubmit={onSubmit}>
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+        This Contact will be recorded under the currently signed-in User: {currentUser?.name ?? "current user"}.
+      </div>
+      {formError ? (
+        <Alert tone="danger" onDismiss={onErrorDismiss}>
+          {formError}
+        </Alert>
+      ) : null}
+      <div className="grid gap-4 md:grid-cols-2">
+        <SelectField
+          label="Channel"
+          onChange={(value) => onChange((current) => ({ ...current, channel: value as LeadCommunicationChannel }))}
+          options={preferredChannels}
+          required
+          value={form.channel}
+        />
+        <SelectField
+          label="Outcome"
+          onChange={(value) =>
+            onChange((current) => ({
+              ...current,
+              includeNextFollowUp: value === "CALLBACK_REQUESTED" ? true : current.includeNextFollowUp,
+              outcome: value as LeadContactOutcome,
+            }))
+          }
+          options={contactOutcomeOptions}
+          required
+          value={form.outcome}
+        />
+      </div>
+      <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+        <span>Notes</span>
+        <textarea
+          className="min-h-36 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-disabled)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+          data-dialog-initial-focus
+          maxLength={2000}
+          onChange={(event) => onChange((current) => ({ ...current, notes: event.target.value }))}
+          required
+          value={form.notes}
+        />
+        <span className="text-xs font-normal text-[var(--color-text-muted)]">{form.notes.length}/2000</span>
+      </label>
+      <NextFollowUpFields
+        assignees={assignees}
+        checked={form.includeNextFollowUp}
+        disabled={form.outcome === "CALLBACK_REQUESTED"}
+        followUp={form.nextFollowUp}
+        onCheckedChange={(checked) => onChange((current) => ({ ...current, includeNextFollowUp: checked }))}
+        onFollowUpChange={(updater) =>
+          onChange((current) => ({
+            ...current,
+            nextFollowUp:
+              typeof updater === "function"
+                ? updater(current.nextFollowUp)
+                : updater,
+          }))
+        }
+        required={form.outcome === "CALLBACK_REQUESTED"}
+      />
+      <div className="flex justify-end gap-3 border-t border-[var(--color-divider)] pt-[var(--space-4)]">
+        <Button disabled={isSaving} onClick={onCancel} type="button" variant="secondary">
+          Cancel
+        </Button>
+        <Button className="gap-2" disabled={isSaving} type="submit">
+          {isSaving ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : <PhoneCall className="size-[var(--icon-sm)]" />}
+          Record Contact
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function FollowUpFields({
+  assignees,
+  form,
+  onChange,
+  withInitialFocus = false,
+}: {
+  assignees: LeadAssigneeOption[];
+  form: FollowUpFormState;
+  onChange: React.Dispatch<React.SetStateAction<FollowUpFormState>>;
+  withInitialFocus?: boolean;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <Input
+          data-dialog-initial-focus={withInitialFocus ? true : undefined}
+          label="Scheduled date"
+          onChange={(event) => onChange((current) => ({ ...current, scheduledDate: event.target.value }))}
+          required
+          type="date"
+          value={form.scheduledDate}
+        />
+        <Input
+          label="Scheduled time"
+          onChange={(event) => onChange((current) => ({ ...current, scheduledTime: event.target.value }))}
+          required
+          type="time"
+          value={form.scheduledTime}
+        />
+        <SelectField
+          label="Channel"
+          onChange={(value) => onChange((current) => ({ ...current, channel: value as LeadCommunicationChannel }))}
+          options={preferredChannels}
+          required
+          value={form.channel}
+        />
+        <SelectField
+          label="Assign to"
+          onChange={(value) => onChange((current) => ({ ...current, assignedUserId: value }))}
+          options={[
+            { label: "Unassigned", value: "" },
+            ...assignees.map((assignee) => ({
+              label: `${assignee.name} (${formatEnum(assignee.role)})`,
+              value: assignee.userId,
+            })),
+          ]}
+          value={form.assignedUserId}
+        />
+      </div>
+      <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+        <span>Reason details</span>
+        <textarea
+          className="min-h-28 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-disabled)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+          maxLength={1000}
+          onChange={(event) => onChange((current) => ({ ...current, reasonDetails: event.target.value }))}
+          required
+          value={form.reasonDetails}
+        />
+        <span className="text-xs font-normal text-[var(--color-text-muted)]">{form.reasonDetails.length}/1000</span>
+      </label>
+    </div>
+  );
+}
+
+function NextFollowUpFields({
+  assignees,
+  checked,
+  disabled,
+  followUp,
+  onCheckedChange,
+  onFollowUpChange,
+  required,
+}: {
+  assignees: LeadAssigneeOption[];
+  checked: boolean;
+  disabled: boolean;
+  followUp: FollowUpFormState;
+  onCheckedChange: (checked: boolean) => void;
+  onFollowUpChange: React.Dispatch<React.SetStateAction<FollowUpFormState>>;
+  required: boolean;
+}) {
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+      <label className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text)]">
+        <input
+          checked={checked}
+          disabled={disabled}
+          onChange={(event) => onCheckedChange(event.target.checked)}
+          type="checkbox"
+        />
+        Add next Follow-up{required ? " (required)" : ""}
+      </label>
+      {checked ? (
+        <div className="mt-4">
+          <FollowUpFields
+            assignees={assignees}
+            form={followUp}
+            onChange={onFollowUpChange}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -2311,6 +3786,81 @@ function VisitDetailDialog({
         <DetailItem label="Preferred days" value={formatDays(visit.preferredDays)} />
         <DetailItem label="Preferred time" value={formatPreferredTime(visit.preferredStartTime, visit.preferredEndTime)} />
         <DetailItem label="Next-action note" value={visit.nextActionNote} />
+      </DetailSection>
+    </div>
+  );
+}
+
+function FollowUpDetailDialog({
+  error,
+  followUp,
+  isLoading,
+}: {
+  error: string;
+  followUp: LeadFollowUpDetail | null;
+  isLoading: boolean;
+}) {
+  if (isLoading) return <LoadingPanel label="Loading Follow-up detail" />;
+  if (error) return <EmptyPanel message={error} tone="danger" />;
+  if (!followUp) return <EmptyPanel message="Follow-up detail is not available." />;
+  return (
+    <div className="space-y-4">
+      <DetailSection title="Schedule">
+        <DetailItem label="Scheduled for" value={formatDateTime(followUp.scheduledAt)} />
+        <DetailItem label="Channel" value={formatEnum(followUp.channel)} />
+        <DetailItem label="Status" value={formatEnum(followUp.status)} />
+        <DetailItem label="Overdue" value={followUp.isOverdue ? "Yes" : "No"} />
+        <DetailItem label="Reason" value={followUp.reasonDetails} />
+        <DetailItem label="Assigned to" value={followUp.assignedUser?.name ?? "Unassigned"} />
+      </DetailSection>
+      <DetailSection title="Outcome">
+        <DetailItem label="Completed by" value={followUp.completedByUser?.name} />
+        <DetailItem label="Completed at" value={formatDateTime(followUp.completedAt)} />
+        <DetailItem label="Cancelled by" value={followUp.cancelledByUser?.name} />
+        <DetailItem label="Cancelled at" value={formatDateTime(followUp.cancelledAt)} />
+        <DetailItem label="Cancellation reason" value={followUp.cancellationReason} />
+        <DetailItem label="Rescheduled by" value={followUp.rescheduledByUser?.name} />
+        <DetailItem label="Rescheduled at" value={formatDateTime(followUp.rescheduledAt)} />
+        <DetailItem label="Reschedule reason" value={followUp.rescheduleReason} />
+        <DetailItem label="Replaces Follow-up" value={followUp.replacesFollowUpId ? shortId(followUp.replacesFollowUpId) : null} />
+      </DetailSection>
+      <DetailSection title="Audit">
+        <DetailItem label="Created by" value={followUp.createdByUser?.name} />
+        <DetailItem label="Updated by" value={followUp.updatedByUser?.name} />
+        <DetailItem label="Created" value={formatDateTime(followUp.createdAt)} />
+        <DetailItem label="Updated" value={formatDateTime(followUp.updatedAt)} />
+      </DetailSection>
+    </div>
+  );
+}
+
+function ContactDetailDialog({
+  contact,
+  error,
+  isLoading,
+}: {
+  contact: LeadContactDetail | null;
+  error: string;
+  isLoading: boolean;
+}) {
+  if (isLoading) return <LoadingPanel label="Loading Contact detail" />;
+  if (error) return <EmptyPanel message={error} tone="danger" />;
+  if (!contact) return <EmptyPanel message="Contact detail is not available." />;
+  return (
+    <div className="space-y-4">
+      <DetailSection title="Contact">
+        <DetailItem label="Contacted at" value={formatDateTime(contact.contactedAt)} />
+        <DetailItem label="Channel" value={formatEnum(contact.channel)} />
+        <DetailItem label="Outcome" value={formatEnum(contact.outcome)} />
+        <DetailItem label="Notes" value={contact.notes} />
+      </DetailSection>
+      <DetailSection title="Attribution">
+        <DetailItem label="Handled by" value={contact.actorUser?.name ?? "Unknown user"} />
+        <DetailItem
+          label="Completed Follow-up"
+          value={contact.completedFollowUpId ? shortId(contact.completedFollowUpId) : "Independent Contact"}
+        />
+        <DetailItem label="Created" value={formatDateTime(contact.createdAt)} />
       </DetailSection>
     </div>
   );
@@ -3211,6 +4761,132 @@ function buildVisitPayload(
   };
 }
 
+function buildFollowUpPayload(
+  form: FollowUpFormState,
+  assignees: LeadAssigneeOption[],
+): ScheduleLeadFollowUpRequest {
+  return buildFollowUpSchedulePayload(form, assignees);
+}
+
+function buildCompleteFollowUpPayload(
+  form: CompleteFollowUpFormState,
+  assignees: LeadAssigneeOption[],
+): CompleteLeadFollowUpRequest {
+  const notes = form.notes.trim();
+  if (!notes) throw new Error("Enter Contact notes before completing the Follow-up.");
+  if (notes.length > 2000) throw new Error("Contact notes must be 2000 characters or fewer.");
+  if (form.outcome === "CALLBACK_REQUESTED" && !form.includeNextFollowUp) {
+    throw new Error("Add the required next Follow-up for a callback request.");
+  }
+
+  const payload: CompleteLeadFollowUpRequest = {
+    channel: form.channel,
+    notes,
+    outcome: form.outcome,
+  };
+
+  if (form.includeNextFollowUp) {
+    payload.nextFollowUp = buildFollowUpSchedulePayload(form.nextFollowUp, assignees);
+  }
+
+  return payload;
+}
+
+function buildReschedulePayload(form: RescheduleFollowUpFormState): RescheduleLeadFollowUpRequest {
+  const scheduledAt = localDateTimeToOffsetIso(form.scheduledDate, form.scheduledTime);
+  if (!scheduledAt) throw new Error("Choose a valid future date and time.");
+
+  const reason = form.reason.trim();
+  if (!reason) throw new Error("Enter the reschedule reason.");
+  if (reason.length > 1000) throw new Error("Reschedule reason must be 1000 characters or fewer.");
+
+  return { reason, scheduledAt };
+}
+
+function buildCancelPayload(form: CancelFollowUpFormState): CancelLeadFollowUpRequest {
+  const reason = form.reason.trim();
+  if (!reason) throw new Error("Enter the cancellation reason.");
+  if (reason.length > 1000) throw new Error("Cancellation reason must be 1000 characters or fewer.");
+  return { reason };
+}
+
+function buildContactPayload(
+  form: ContactFormState,
+  assignees: LeadAssigneeOption[],
+): RecordLeadContactRequest {
+  const notes = form.notes.trim();
+  if (!notes) throw new Error("Enter Contact notes.");
+  if (notes.length > 2000) throw new Error("Contact notes must be 2000 characters or fewer.");
+  if (form.outcome === "CALLBACK_REQUESTED" && !form.includeNextFollowUp) {
+    throw new Error("Add the required next Follow-up for a callback request.");
+  }
+
+  const payload: RecordLeadContactRequest = {
+    channel: form.channel,
+    notes,
+    outcome: form.outcome,
+  };
+
+  if (form.includeNextFollowUp) {
+    payload.nextFollowUp = buildFollowUpSchedulePayload(form.nextFollowUp, assignees);
+  }
+
+  return payload;
+}
+
+function buildFollowUpSchedulePayload(
+  form: FollowUpFormState,
+  assignees: LeadAssigneeOption[],
+): LeadFollowUpScheduleRequest {
+  const scheduledAt = localDateTimeToOffsetIso(form.scheduledDate, form.scheduledTime);
+  if (!scheduledAt) throw new Error("Choose a valid future date and time.");
+
+  const reasonDetails = form.reasonDetails.trim();
+  if (!reasonDetails) throw new Error("Enter Follow-up reason details.");
+  if (reasonDetails.length > 1000) throw new Error("Follow-up reason details must be 1000 characters or fewer.");
+
+  const allowedAssigneeIds = new Set(assignees.map((assignee) => assignee.userId));
+  if (form.assignedUserId && !allowedAssigneeIds.has(form.assignedUserId)) {
+    throw new Error("Choose an eligible assignee from the scoped Branch list.");
+  }
+
+  const payload: LeadFollowUpScheduleRequest = {
+    channel: form.channel,
+    reasonDetails,
+    scheduledAt,
+  };
+
+  if (form.assignedUserId) payload.assignedUserId = form.assignedUserId;
+  return payload;
+}
+
+function localDateTimeToOffsetIso(date: string, time: string) {
+  if (!date || !time) return null;
+  const localDate = new Date(`${date}T${time}:00`);
+  if (Number.isNaN(localDate.getTime()) || localDate.getTime() <= Date.now()) return null;
+  const offsetMinutes = -localDate.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteOffset = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(absoluteOffset / 60)).padStart(2, "0");
+  const minutes = String(absoluteOffset % 60).padStart(2, "0");
+  return `${date}T${time}:00${sign}${hours}:${minutes}`;
+}
+
+function defaultFollowUpForm(channel?: LeadCommunicationChannel | null): FollowUpFormState {
+  return {
+    ...emptyFollowUpForm,
+    channel: channel ?? "PHONE_CALL",
+  };
+}
+
+function defaultContactForm(channel?: LeadCommunicationChannel | null): ContactFormState {
+  return {
+    ...emptyContactForm,
+    channel: channel ?? "PHONE_CALL",
+    nextFollowUp: defaultFollowUpForm(channel),
+  };
+}
+
 function leadToForm(lead: LeadDetail): LeadFormState {
   return {
     alternatePhone: lead.alternatePhone ?? "",
@@ -3318,6 +4994,25 @@ function statusTone(status: LeadStatus) {
   if (status === "FOLLOW_UP") return "pending";
   if (status === "ARCHIVED" || status === "DORMANT") return "lost";
   return "active";
+}
+
+function followUpStatusTone(followUp: LeadFollowUpSummary) {
+  if (followUp.isOverdue) return "lost";
+  if (followUp.status === "PENDING") return "pending";
+  if (followUp.status === "COMPLETED") return "active";
+  return "lost";
+}
+
+function followUpActionTitle(action: FollowUpAction) {
+  if (action === "complete") return "Complete Follow-up";
+  if (action === "reschedule") return "Reschedule Follow-up";
+  return "Cancel Follow-up";
+}
+
+function followUpActionIcon(action: FollowUpAction) {
+  if (action === "complete") return <CheckCircle className="size-[var(--icon-sm)]" />;
+  if (action === "reschedule") return <RotateCw className="size-[var(--icon-sm)]" />;
+  return <Ban className="size-[var(--icon-sm)]" />;
 }
 
 function avatarTone(id: string) {
