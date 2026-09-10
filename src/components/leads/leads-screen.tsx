@@ -7,13 +7,17 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Eye,
   Filter,
   Loader2,
+  Pencil,
   Plus,
   RefreshCw,
+  Save,
   Search,
   ShieldAlert,
   SlidersHorizontal,
+  UserMinus,
   UserPlus,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -28,35 +32,34 @@ import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { AuthApiError, getCurrentUser, type AuthUser } from "@/lib/api/auth";
 import { getBatches, type Batch } from "@/lib/api/batches";
-import { listBranchAdmins, type BranchAdmin } from "@/lib/api/branch-admins";
-import { listBranchPersonnel, type BranchPersonnel } from "@/lib/api/branch-personnel";
 import { getBranches, type Branch } from "@/lib/api/branches";
 import { getGoals, type Goal } from "@/lib/api/goals";
 import {
   createLeadForBranch,
+  getLeadDetail,
   LeadApiError,
   LeadPhoneConflictError,
+  listLeadAssignees,
   listLeads,
+  updateLeadAssignment,
+  updateLeadProfile,
   type BatchTypePref,
   type CreateLeadRequest,
+  type LeadAssigneeOption,
   type LeadCommunicationChannel,
   type LeadCurrentIntent,
+  type LeadDetail,
   type LeadSource,
   type LeadStage,
   type LeadStatus,
   type LeadSummary,
   type PaginationMeta,
+  type UpdateLeadRequest,
 } from "@/lib/api/leads";
 import { getOrganizations, type Organization } from "@/lib/api/organizations";
 import { getPrograms, type Program } from "@/lib/api/programs";
 import { clearSession, getAccessToken, getStoredUser, saveSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
-
-type AssigneeOption = {
-  id: string;
-  name: string;
-  role: "BRANCH_ADMIN" | "RECEPTIONIST";
-};
 
 type LeadFormState = {
   alternatePhone: string;
@@ -200,7 +203,7 @@ export function LeadsScreen() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
-  const [assignees, setAssignees] = useState<AssigneeOption[]>([]);
+  const [assignees, setAssignees] = useState<LeadAssigneeOption[]>([]);
   const [leads, setLeads] = useState<LeadSummary[]>([]);
   const [meta, setMeta] = useState<PaginationMeta>({
     limit: pageSize,
@@ -223,6 +226,31 @@ export function LeadsScreen() {
   const [formError, setFormError] = useState("");
   const [phoneConflict, setPhoneConflict] = useState<LeadPhoneConflictError | null>(null);
   const [form, setForm] = useState<LeadFormState>(emptyForm);
+  const [selectedLeadId, setSelectedLeadId] = useState("");
+  const [selectedLead, setSelectedLead] = useState<LeadDetail | null>(null);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState("");
+  const [profileStatus, setProfileStatus] = useState<number | null>(null);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
+  const [editForm, setEditForm] = useState<LeadFormState>(emptyForm);
+  const [editConflict, setEditConflict] = useState<LeadPhoneConflictError | null>(null);
+  const [assignmentValue, setAssignmentValue] = useState("");
+  const [isUpdatingAssignment, setIsUpdatingAssignment] = useState(false);
+  const [assignmentError, setAssignmentError] = useState("");
+  const [profileAssignees, setProfileAssignees] = useState<LeadAssigneeOption[]>([]);
+  const [profileAssigneeMeta, setProfileAssigneeMeta] = useState<PaginationMeta>({
+    limit: pageSize,
+    page: 1,
+    total: 0,
+    totalPages: 0,
+  });
+  const [profileAssigneePage, setProfileAssigneePage] = useState(1);
+  const [profileAssigneeSearch, setProfileAssigneeSearch] = useState("");
+  const [debouncedProfileAssigneeSearch, setDebouncedProfileAssigneeSearch] = useState("");
+  const [isProfileAssigneesLoading, setIsProfileAssigneesLoading] = useState(false);
+  const [profileAssigneeError, setProfileAssigneeError] = useState("");
 
   const canUseLeads = Boolean(user && user.role !== "LEAD_CALLER");
   const fixedBranchId =
@@ -307,6 +335,14 @@ export function LeadsScreen() {
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
+      setDebouncedProfileAssigneeSearch(profileAssigneeSearch.trim());
+    }, 300);
+
+    return () => window.clearTimeout(timeout);
+  }, [profileAssigneeSearch]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
       setPage(1);
     }, 0);
 
@@ -324,6 +360,22 @@ export function LeadsScreen() {
     filters.stage,
     filters.status,
   ]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setIsProfileOpen(false);
+      setSelectedLeadId("");
+      setSelectedLead(null);
+      setProfileError("");
+      setProfileStatus(null);
+      setProfileAssignees([]);
+      setProfileAssigneeSearch("");
+      setProfileAssigneePage(1);
+      setAssignmentError("");
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [effectiveBranchId, effectiveOrganizationId]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -450,22 +502,22 @@ export function LeadsScreen() {
       setPrograms(programData);
       setGoals(goalData);
       setBatches(batchData);
-
-      try {
-        const options = await loadAssignees(token, user, effectiveBranchId);
-        setAssignees(options);
-      } catch {
-        setAssignees(selfAssigneeOption(user, effectiveBranchId));
-        setMetadataWarning("Assignment options are limited for this Branch.");
-      }
+      const options = await listLeadAssignees(token, effectiveBranchId, { limit: 100 });
+      setAssignees(options.data);
     } catch (apiError) {
+      setAssignees([]);
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
       setMetadataWarning(
         apiError instanceof Error ? apiError.message : "Unable to load Lead metadata.",
       );
     } finally {
       setIsMetadataLoading(false);
     }
-  }, [canUseLeads, effectiveBranchId, token, user]);
+  }, [canUseLeads, effectiveBranchId, router, token, user]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -563,7 +615,7 @@ export function LeadsScreen() {
     setFormError("");
     setPhoneConflict(null);
     try {
-      const payload = buildCreatePayload(form, branchBatches, activePrograms, activeGoals);
+      const payload = buildCreatePayload(form, branchBatches, activePrograms, activeGoals, assignees);
       await createLeadForBranch(token, effectiveBranchId, payload);
       setNotice("Lead created.");
       setIsCreateOpen(false);
@@ -586,6 +638,176 @@ export function LeadsScreen() {
     setSearch(existingLead?.primaryPhone || existingLead?.fullName || form.primaryPhone);
     setFilters((current) => ({ ...current, stage: "", status: "", source: "" }));
     setIsCreateOpen(false);
+  }
+
+  const refreshLeadProfile = useCallback(async (leadId: string) => {
+    if (!token) return null;
+    setIsProfileLoading(true);
+    setProfileError("");
+    setProfileStatus(null);
+    try {
+      const detail = await getLeadDetail(token, leadId);
+      setSelectedLead(detail);
+      setEditForm(leadToForm(detail));
+      setAssignmentValue(detail.assignedUser?.id ?? "");
+      return detail;
+    } catch (apiError) {
+      if (apiError instanceof LeadApiError) {
+        setProfileStatus(apiError.status);
+        if (apiError.status === 401) {
+          clearSession();
+          router.replace("/");
+          return null;
+        }
+      }
+      setSelectedLead(null);
+      setProfileError(apiError instanceof Error ? apiError.message : "Unable to load Lead profile.");
+      return null;
+    } finally {
+      setIsProfileLoading(false);
+    }
+  }, [router, token]);
+
+  function openLeadProfile(leadId: string) {
+    setSelectedLeadId(leadId);
+    setSelectedLead(null);
+    setProfileError("");
+    setProfileStatus(null);
+    setEditConflict(null);
+    setAssignmentError("");
+    setIsEditingProfile(false);
+    setIsProfileOpen(true);
+    setProfileAssigneePage(1);
+    setProfileAssigneeSearch("");
+    void refreshLeadProfile(leadId);
+  }
+
+  function closeLeadProfile() {
+    setIsProfileOpen(false);
+    setSelectedLeadId("");
+    setSelectedLead(null);
+    setIsEditingProfile(false);
+    setProfileError("");
+    setProfileStatus(null);
+    setAssignmentError("");
+    setEditConflict(null);
+  }
+
+  useEffect(() => {
+    if (!isProfileOpen || !token || !selectedLead?.branchId) return;
+    let isMounted = true;
+
+    async function loadProfileAssignees() {
+      setIsProfileAssigneesLoading(true);
+      setProfileAssigneeError("");
+      try {
+        const result = await listLeadAssignees(token, selectedLead!.branchId, {
+          page: profileAssigneePage,
+          limit: pageSize,
+          search: debouncedProfileAssigneeSearch || undefined,
+        });
+        if (!isMounted) return;
+        setProfileAssignees(result.data);
+        setProfileAssigneeMeta(result.meta);
+      } catch (apiError) {
+        if (!isMounted) return;
+        if (apiError instanceof LeadApiError && apiError.status === 401) {
+          clearSession();
+          router.replace("/");
+          return;
+        }
+        setProfileAssignees([]);
+        setProfileAssigneeMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+        setProfileAssigneeError(apiError instanceof Error ? apiError.message : "Unable to load assignees.");
+      } finally {
+        if (isMounted) setIsProfileAssigneesLoading(false);
+      }
+    }
+
+    const timeout = window.setTimeout(() => {
+      void loadProfileAssignees();
+    }, 0);
+
+    return () => {
+      isMounted = false;
+      window.clearTimeout(timeout);
+    };
+  }, [
+    debouncedProfileAssigneeSearch,
+    isProfileOpen,
+    profileAssigneePage,
+    router,
+    selectedLead,
+    token,
+  ]);
+
+  async function submitProfileUpdate(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !selectedLead) return;
+
+    setIsUpdatingProfile(true);
+    setProfileError("");
+    setEditConflict(null);
+    try {
+      const payload = buildUpdatePayload(editForm, branchBatches, activePrograms, activeGoals);
+      const updated = await updateLeadProfile(token, selectedLead.id, payload);
+      setSelectedLead(updated);
+      setEditForm(leadToForm(updated));
+      setNotice("Lead profile updated.");
+      setIsEditingProfile(false);
+      await loadLeadList();
+    } catch (apiError) {
+      if (apiError instanceof LeadPhoneConflictError) {
+        setEditConflict(apiError);
+      } else if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+      } else {
+        setProfileError(apiError instanceof Error ? apiError.message : "Unable to update Lead profile.");
+      }
+    } finally {
+      setIsUpdatingProfile(false);
+    }
+  }
+
+  async function submitAssignmentChange(nextAssignedUserId: string | null) {
+    if (!token || !selectedLead) return;
+
+    const currentAssignedUserId = selectedLead.assignedUser?.id ?? null;
+    if (currentAssignedUserId === nextAssignedUserId) return;
+    if (nextAssignedUserId && !profileAssignees.some((assignee) => assignee.userId === nextAssignedUserId)) {
+      setAssignmentError("Choose an eligible assignee from the scoped Branch list.");
+      return;
+    }
+    const confirmed = window.confirm(
+      nextAssignedUserId
+        ? "Update this Lead assignment?"
+        : "Remove the current Lead assignment?",
+    );
+    if (!confirmed) return;
+
+    setIsUpdatingAssignment(true);
+    setAssignmentError("");
+    try {
+      const updated = await updateLeadAssignment(token, selectedLead.id, {
+        assignedUserId: nextAssignedUserId,
+      });
+      setSelectedLead(updated);
+      setEditForm(leadToForm(updated));
+      setAssignmentValue(updated.assignedUser?.id ?? "");
+      setNotice(nextAssignedUserId ? "Lead assignment updated." : "Lead assignment removed.");
+      await loadLeadList();
+    } catch (apiError) {
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setAssignmentError(apiError instanceof Error ? apiError.message : "Unable to update Lead assignment.");
+      void refreshLeadProfile(selectedLead.id);
+    } finally {
+      setIsUpdatingAssignment(false);
+    }
   }
 
   if (user?.role === "LEAD_CALLER") {
@@ -786,7 +1008,7 @@ export function LeadsScreen() {
                 >
                   <option value="">Anyone</option>
                   {assignees.map((assignee) => (
-                    <option key={assignee.id} value={assignee.id}>
+                    <option key={assignee.userId} value={assignee.userId}>
                       {assignee.name} ({formatEnum(assignee.role)})
                     </option>
                   ))}
@@ -827,6 +1049,7 @@ export function LeadsScreen() {
             isLoading={isListLoading}
             leads={leads}
             metadataLoading={isMetadataLoading}
+            onOpenLead={openLeadProfile}
           />
 
           <Pagination meta={meta} onPageChange={setPage} />
@@ -934,7 +1157,7 @@ export function LeadsScreen() {
                 { label: "Unassigned", value: "" },
                 ...assignees.map((assignee) => ({
                   label: `${assignee.name} (${formatEnum(assignee.role)})`,
-                  value: assignee.id,
+                  value: assignee.userId,
                 })),
               ]}
               value={form.assignedUserId}
@@ -1010,7 +1233,542 @@ export function LeadsScreen() {
           </div>
         </form>
       </Dialog>
+
+      <Dialog
+        className="max-w-6xl"
+        isOpen={isProfileOpen}
+        onClose={closeLeadProfile}
+        title={selectedLead?.fullName || "Lead profile"}
+      >
+        <LeadProfileDialog
+          activeGoals={activeGoals}
+          activePrograms={activePrograms}
+          assigneeError={profileAssigneeError}
+          assigneeMeta={profileAssigneeMeta}
+          assigneePage={profileAssigneePage}
+          assigneeSearch={profileAssigneeSearch}
+          assignees={profileAssignees}
+          assignmentError={assignmentError}
+          assignmentValue={assignmentValue}
+          branchBatches={branchBatches}
+          editConflict={editConflict}
+          form={editForm}
+          isAssigneesLoading={isProfileAssigneesLoading}
+          isEditing={isEditingProfile}
+          isLoading={isProfileLoading}
+          isSavingAssignment={isUpdatingAssignment}
+          isSavingProfile={isUpdatingProfile}
+          lead={selectedLead}
+          onAssigneePageChange={setProfileAssigneePage}
+          onAssigneeSearchChange={(value) => {
+            setProfileAssigneeSearch(value);
+            setProfileAssigneePage(1);
+          }}
+          onAssignmentChange={setAssignmentValue}
+          onCancelEdit={() => {
+            if (selectedLead) setEditForm(leadToForm(selectedLead));
+            setIsEditingProfile(false);
+            setEditConflict(null);
+            setProfileError("");
+          }}
+          onEdit={() => setIsEditingProfile(true)}
+          onFieldChange={setEditForm}
+          onLocateConflict={(conflict) => {
+            setSearch(conflict.existingLead?.primaryPhone || conflict.existingLead?.fullName || editForm.primaryPhone);
+            setFilters((current) => ({ ...current, stage: "", status: "", source: "" }));
+            closeLeadProfile();
+          }}
+          onRetry={() => selectedLeadId && void refreshLeadProfile(selectedLeadId)}
+          onSubmitAssignment={submitAssignmentChange}
+          onSubmitProfile={submitProfileUpdate}
+          profileError={profileError}
+          profileStatus={profileStatus}
+        />
+      </Dialog>
     </AppShell>
+  );
+}
+
+function LeadProfileDialog({
+  activeGoals,
+  activePrograms,
+  assigneeError,
+  assigneeMeta,
+  assigneePage,
+  assigneeSearch,
+  assignees,
+  assignmentError,
+  assignmentValue,
+  branchBatches,
+  editConflict,
+  form,
+  isAssigneesLoading,
+  isEditing,
+  isLoading,
+  isSavingAssignment,
+  isSavingProfile,
+  lead,
+  onAssigneePageChange,
+  onAssigneeSearchChange,
+  onAssignmentChange,
+  onCancelEdit,
+  onEdit,
+  onFieldChange,
+  onLocateConflict,
+  onRetry,
+  onSubmitAssignment,
+  onSubmitProfile,
+  profileError,
+  profileStatus,
+}: {
+  activeGoals: Goal[];
+  activePrograms: Program[];
+  assigneeError: string;
+  assigneeMeta: PaginationMeta;
+  assigneePage: number;
+  assigneeSearch: string;
+  assignees: LeadAssigneeOption[];
+  assignmentError: string;
+  assignmentValue: string;
+  branchBatches: Batch[];
+  editConflict: LeadPhoneConflictError | null;
+  form: LeadFormState;
+  isAssigneesLoading: boolean;
+  isEditing: boolean;
+  isLoading: boolean;
+  isSavingAssignment: boolean;
+  isSavingProfile: boolean;
+  lead: LeadDetail | null;
+  onAssigneePageChange: (page: number) => void;
+  onAssigneeSearchChange: (value: string) => void;
+  onAssignmentChange: (value: string) => void;
+  onCancelEdit: () => void;
+  onEdit: () => void;
+  onFieldChange: React.Dispatch<React.SetStateAction<LeadFormState>>;
+  onLocateConflict: (conflict: LeadPhoneConflictError) => void;
+  onRetry: () => void;
+  onSubmitAssignment: (assignedUserId: string | null) => void;
+  onSubmitProfile: (event: React.FormEvent<HTMLFormElement>) => void;
+  profileError: string;
+  profileStatus: number | null;
+}) {
+  if (isLoading) {
+    return (
+      <div className="grid min-h-96 place-items-center">
+        <div className="flex items-center gap-3 text-sm font-semibold text-[var(--color-text-secondary)]">
+          <Loader2 className="size-[var(--icon-md)] animate-spin text-[var(--color-primary)]" />
+          Loading Lead profile
+        </div>
+      </div>
+    );
+  }
+
+  if (!lead) {
+    const title =
+      profileStatus === 403
+        ? "Lead profile unavailable"
+        : profileStatus === 404
+          ? "Lead not found"
+          : "Unable to load Lead profile";
+    return (
+      <div className="grid min-h-96 place-items-center text-center">
+        <div className="max-w-md">
+          <ShieldAlert className="mx-auto size-10 text-[var(--color-danger)]" />
+          <p className="mt-3 text-base font-bold text-[var(--color-text)]">{title}</p>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            {profileError || "The requested Lead could not be loaded."}
+          </p>
+          <Button className="mt-4 gap-2" onClick={onRetry} variant="secondary">
+            <RefreshCw className="size-[var(--icon-sm)]" />
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const currentAssignee = lead.assignedUser;
+  const assignmentOptions = currentAssignee && !assignees.some((assignee) => assignee.userId === currentAssignee.id)
+    ? [
+        {
+          userId: currentAssignee.id,
+          name: currentAssignee.name,
+          role: currentAssignee.role === "BRANCH_ADMIN" ? "BRANCH_ADMIN" as const : "RECEPTIONIST" as const,
+          organizationId: currentAssignee.organizationId ?? lead.organizationId ?? "",
+          branchId: currentAssignee.branchId ?? lead.branchId,
+        },
+        ...assignees,
+      ]
+    : assignees;
+
+  return (
+    <div className="space-y-[var(--space-5)]">
+      {profileError ? (
+        <div className="rounded-[var(--radius-md)] border border-[var(--color-danger)] bg-[var(--red-50)] px-4 py-3 text-sm text-[var(--color-danger)]">
+          {profileError}
+        </div>
+      ) : null}
+      <div className="flex flex-col gap-4 rounded-[var(--radius-md)] border border-[var(--color-border)] p-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <InitialAvatar name={lead.fullName} tone={avatarTone(lead.id)} />
+          <div className="min-w-0">
+            <p className="truncate text-lg font-bold text-[var(--color-text)]">{lead.fullName}</p>
+            <p className="text-sm text-[var(--color-text-secondary)]">
+              {lead.primaryPhone || "No primary phone"} | {lead.email || "No email"}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <StatusBadge status={statusTone(lead.status)}>{formatEnum(lead.status)}</StatusBadge>
+          <StatusBadge status="pending">{formatEnum(lead.stage)}</StatusBadge>
+          {!isEditing ? (
+            <Button className="gap-2" onClick={onEdit} variant="secondary">
+              <Pencil className="size-[var(--icon-sm)]" />
+              Edit
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {isEditing ? (
+        <form className="space-y-[var(--space-5)]" onSubmit={onSubmitProfile}>
+          {editConflict ? (
+            <ConflictPanel conflict={editConflict} onLocate={() => onLocateConflict(editConflict)} />
+          ) : null}
+          <LeadEditableFields
+            activeGoals={activeGoals}
+            activePrograms={activePrograms}
+            branchBatches={branchBatches}
+            form={form}
+            onFieldChange={onFieldChange}
+          />
+          <div className="flex justify-end gap-3 border-t border-[var(--color-divider)] pt-[var(--space-4)]">
+            <Button disabled={isSavingProfile} onClick={onCancelEdit} type="button" variant="secondary">
+              Cancel
+            </Button>
+            <Button className="gap-2" disabled={isSavingProfile} type="submit">
+              {isSavingProfile ? (
+                <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+              ) : (
+                <Save className="size-[var(--icon-sm)]" />
+              )}
+              Save profile
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <LeadDetailView activeGoals={activeGoals} activePrograms={activePrograms} branchBatches={branchBatches} lead={lead} />
+      )}
+
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="text-sm font-bold text-[var(--color-text)]">Assignment</p>
+            <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+              {currentAssignee ? `${currentAssignee.name} (${formatEnum(currentAssignee.role)})` : "Unassigned"}
+            </p>
+          </div>
+          <div className="grid w-full gap-3 lg:max-w-xl">
+            <Input
+              label="Search assignees"
+              onChange={(event) => onAssigneeSearchChange(event.target.value)}
+              placeholder="Search by name"
+              value={assigneeSearch}
+            />
+            <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+              <span>Eligible assignee</span>
+              <select
+                className="h-[var(--control-height-lg)] rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] text-sm shadow-[var(--shadow-xs)] outline-none focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+                disabled={isAssigneesLoading || !assignmentOptions.length}
+                onChange={(event) => onAssignmentChange(event.target.value)}
+                value={assignmentValue}
+              >
+                <option value="">Unassigned</option>
+                {assignmentOptions.map((assignee) => (
+                  <option key={assignee.userId} value={assignee.userId}>
+                    {assignee.name} ({formatEnum(assignee.role)})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-xs text-[var(--color-text-secondary)]">
+                {isAssigneesLoading ? "Loading assignees" : `${assigneeMeta.total} eligible options`}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  aria-label="Previous assignee page"
+                  disabled={isAssigneesLoading || assigneePage <= 1}
+                  onClick={() => onAssigneePageChange(Math.max(1, assigneePage - 1))}
+                  variant="secondary"
+                >
+                  <ChevronLeft className="size-[var(--icon-sm)]" />
+                </Button>
+                <Button
+                  aria-label="Next assignee page"
+                  disabled={isAssigneesLoading || assigneePage >= Math.max(1, assigneeMeta.totalPages)}
+                  onClick={() => onAssigneePageChange(Math.min(Math.max(1, assigneeMeta.totalPages), assigneePage + 1))}
+                  variant="secondary"
+                >
+                  <ChevronRight className="size-[var(--icon-sm)]" />
+                </Button>
+              </div>
+            </div>
+            {assigneeError ? <p className="text-sm text-[var(--color-danger)]">{assigneeError}</p> : null}
+            {assignmentError ? <p className="text-sm text-[var(--color-danger)]">{assignmentError}</p> : null}
+            <div className="flex justify-end gap-3">
+              <Button
+                className="gap-2"
+                disabled={isSavingAssignment || !currentAssignee}
+                onClick={() => void onSubmitAssignment(null)}
+                variant="secondary"
+              >
+                {isSavingAssignment ? (
+                  <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+                ) : (
+                  <UserMinus className="size-[var(--icon-sm)]" />
+                )}
+                Unassign
+              </Button>
+              <Button
+                className="gap-2"
+                disabled={isSavingAssignment || !assignmentValue || assignmentValue === (currentAssignee?.id ?? "")}
+                onClick={() => void onSubmitAssignment(assignmentValue)}
+              >
+                {isSavingAssignment ? (
+                  <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+                ) : (
+                  <UserPlus className="size-[var(--icon-sm)]" />
+                )}
+                Assign
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeadEditableFields({
+  activeGoals,
+  activePrograms,
+  branchBatches,
+  form,
+  onFieldChange,
+}: {
+  activeGoals: Goal[];
+  activePrograms: Program[];
+  branchBatches: Batch[];
+  form: LeadFormState;
+  onFieldChange: React.Dispatch<React.SetStateAction<LeadFormState>>;
+}) {
+  return (
+    <>
+      <div className="grid gap-4 md:grid-cols-2">
+        <Input
+          label="Full name"
+          onChange={(event) => onFieldChange((current) => ({ ...current, fullName: event.target.value }))}
+          required
+          value={form.fullName}
+        />
+        <Input
+          hint="10 digit Indian mobile numbers are saved as +91 format."
+          label="Primary phone"
+          onChange={(event) => onFieldChange((current) => ({ ...current, primaryPhone: event.target.value }))}
+          required
+          value={form.primaryPhone}
+        />
+        <Input
+          label="Alternate phone"
+          onChange={(event) => onFieldChange((current) => ({ ...current, alternatePhone: event.target.value }))}
+          value={form.alternatePhone}
+        />
+        <Input
+          label="Email"
+          onChange={(event) => onFieldChange((current) => ({ ...current, email: event.target.value }))}
+          type="email"
+          value={form.email}
+        />
+        <Input
+          label="Date of birth"
+          onChange={(event) => onFieldChange((current) => ({ ...current, dob: event.target.value }))}
+          type="date"
+          value={form.dob}
+        />
+        <SelectField
+          label="Source"
+          onChange={(value) => onFieldChange((current) => ({ ...current, source: value as LeadSource }))}
+          options={leadSources}
+          required
+          value={form.source}
+        />
+        <SelectField
+          label="Preferred channel"
+          onChange={(value) => onFieldChange((current) => ({ ...current, preferredChannel: value as LeadCommunicationChannel | "" }))}
+          options={[{ label: "No preference", value: "" }, ...preferredChannels]}
+          value={form.preferredChannel}
+        />
+        <SelectField
+          label="Intent"
+          onChange={(value) => onFieldChange((current) => ({ ...current, currentIntent: value as LeadCurrentIntent }))}
+          options={leadIntentOptions}
+          value={form.currentIntent}
+        />
+        <SelectField
+          label="Batch type preference"
+          onChange={(value) => onFieldChange((current) => ({ ...current, batchTypePref: value as BatchTypePref | "" }))}
+          options={[{ label: "No preference", value: "" }, ...batchTypeOptions]}
+          value={form.batchTypePref}
+        />
+        <SelectField
+          label="Preferred batch"
+          onChange={(value) => onFieldChange((current) => ({ ...current, preferredBatchId: value }))}
+          options={[
+            { label: "No preferred batch", value: "" },
+            ...branchBatches.map((batch) => ({
+              label: `${batch.name} (${timeRange(batch)})`,
+              value: batch.id,
+            })),
+          ]}
+          value={form.preferredBatchId}
+        />
+        <Input
+          label="Source details"
+          onChange={(event) => onFieldChange((current) => ({ ...current, sourceDetails: event.target.value }))}
+          value={form.sourceDetails}
+        />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <MultiSelect
+          label="Programs"
+          onChange={(programIds) => onFieldChange((current) => ({ ...current, programIds }))}
+          options={activePrograms.map((program) => ({ label: program.name, value: program.id }))}
+          values={form.programIds}
+        />
+        <MultiSelect
+          label="Goals"
+          onChange={(goalIds) => onFieldChange((current) => ({ ...current, goalIds }))}
+          options={activeGoals.map((goal) => ({ label: goal.name, value: goal.id }))}
+          values={form.goalIds}
+        />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-[1fr_12rem_12rem]">
+        <DayPicker
+          onChange={(preferredDays) => onFieldChange((current) => ({ ...current, preferredDays }))}
+          values={form.preferredDays}
+        />
+        <Input
+          label="Start time"
+          onChange={(event) => onFieldChange((current) => ({ ...current, preferredStartTime: event.target.value }))}
+          type="time"
+          value={form.preferredStartTime}
+        />
+        <Input
+          label="End time"
+          onChange={(event) => onFieldChange((current) => ({ ...current, preferredEndTime: event.target.value }))}
+          type="time"
+          value={form.preferredEndTime}
+        />
+      </div>
+
+      <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+        <span>Current summary</span>
+        <textarea
+          className="min-h-24 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-disabled)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+          onChange={(event) => onFieldChange((current) => ({ ...current, currentSummary: event.target.value }))}
+          value={form.currentSummary}
+        />
+      </label>
+    </>
+  );
+}
+
+function LeadDetailView({
+  activeGoals,
+  activePrograms,
+  branchBatches,
+  lead,
+}: {
+  activeGoals: Goal[];
+  activePrograms: Program[];
+  branchBatches: Batch[];
+  lead: LeadDetail;
+}) {
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <DetailSection title="Identity">
+        <DetailItem label="Full name" value={lead.fullName} />
+        <DetailItem label="Primary phone" value={lead.primaryPhone} />
+        <DetailItem label="Alternate phone" value={lead.alternatePhone} />
+        <DetailItem label="Email" value={lead.email} />
+        <DetailItem label="Date of birth" value={formatDateOnly(lead.dob)} />
+      </DetailSection>
+      <DetailSection title="Acquisition">
+        <DetailItem label="Source" value={formatEnum(lead.source)} />
+        <DetailItem label="Source details" value={lead.sourceDetails} />
+        <DetailItem label="Preferred channel" value={formatEnum(lead.preferredChannel)} />
+        <DetailItem label="Current intent" value={formatEnum(lead.currentIntent)} />
+        <DetailItem label="Current summary" value={lead.currentSummary} />
+      </DetailSection>
+      <DetailSection title="Preferences">
+        <DetailItem label="Batch type" value={formatEnum(lead.batchTypePref)} />
+        <DetailItem label="Preferred batch" value={batchNameFor(lead.preferredBatchId, branchBatches)} />
+        <DetailItem label="Preferred days" value={formatDays(lead.preferredDays)} />
+        <DetailItem label="Preferred time" value={formatPreferredTime(lead.preferredStartTime, lead.preferredEndTime)} />
+        <DetailItem label="Programs" value={formatLeadPrograms(lead, activePrograms)} />
+        <DetailItem label="Goals" value={formatLeadGoals(lead, activeGoals)} />
+      </DetailSection>
+      <DetailSection title="Operations">
+        <DetailItem label="Stage" value={formatEnum(lead.stage)} />
+        <DetailItem label="Status" value={formatEnum(lead.status)} />
+        <DetailItem label="Current assignee" value={formatSafeUser(lead.assignedUser)} />
+        <DetailItem label="Last contacted" value={formatDateTime(lead.lastContactedAt)} />
+        <DetailItem label="Next follow-up" value={formatDateTime(lead.nextFollowUpAt)} />
+        <DetailItem label="Last visited" value={formatDateTime(lead.lastVisitedAt)} />
+      </DetailSection>
+      <DetailSection title="Lifecycle">
+        <DetailItem label="Lost reason" value={formatEnum(lead.lostReason)} />
+        <DetailItem label="Lost explanation" value={lead.lostExplanation} />
+        <DetailItem label="Lost at" value={formatDateTime(lead.lostAt)} />
+        <DetailItem label="Re-engaged at" value={formatDateTime(lead.reengagedAt)} />
+        <DetailItem label="Archived at" value={formatDateTime(lead.archivedAt)} />
+        <DetailItem label="Converted at" value={formatDateTime(lead.convertedAt)} />
+      </DetailSection>
+      <DetailSection title="Audit">
+        <DetailItem label="Created" value={formatDateTime(lead.createdAt)} />
+        <DetailItem label="Updated" value={formatDateTime(lead.updatedAt)} />
+        <DetailItem label="Created by" value={formatSafeUser(lead.createdByUser)} />
+        <DetailItem label="Updated by" value={formatSafeUser(lead.updatedByUser)} />
+        <DetailItem label="Archived by" value={formatSafeUser(lead.archivedByUser)} />
+      </DetailSection>
+    </div>
+  );
+}
+
+function DetailSection({
+  children,
+  title,
+}: {
+  children: React.ReactNode;
+  title: string;
+}) {
+  return (
+    <section className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+      <h3 className="text-sm font-bold text-[var(--color-text)]">{title}</h3>
+      <dl className="mt-3 grid gap-3">{children}</dl>
+    </section>
+  );
+}
+
+function DetailItem({ label, value }: { label: string; value?: React.ReactNode }) {
+  return (
+    <div className="grid gap-1">
+      <dt className="text-xs font-bold uppercase text-[var(--color-text-muted)]">{label}</dt>
+      <dd className="break-words text-sm text-[var(--color-text)]">{isEmptyValue(value) ? "Not set" : value}</dd>
+    </div>
   );
 }
 
@@ -1112,10 +1870,12 @@ function LeadTable({
   isLoading,
   leads,
   metadataLoading,
+  onOpenLead,
 }: {
   isLoading: boolean;
   leads: LeadSummary[];
   metadataLoading: boolean;
+  onOpenLead: (leadId: string) => void;
 }) {
   if (isLoading) {
     return (
@@ -1157,6 +1917,7 @@ function LeadTable({
               "Owner",
               "Next follow-up",
               "Created",
+              "",
             ].map((heading) => (
               <th className="px-4 py-3" key={heading}>
                 {heading}
@@ -1202,6 +1963,17 @@ function LeadTable({
               </td>
               <td className="px-4 py-4 text-[var(--color-text-secondary)]">
                 {formatDateTime(lead.createdAt)}
+              </td>
+              <td className="px-4 py-4 text-right">
+                <Button
+                  aria-label={`Open ${lead.fullName} profile`}
+                  className="gap-2"
+                  onClick={() => onOpenLead(lead.id)}
+                  variant="secondary"
+                >
+                  <Eye className="size-[var(--icon-sm)]" />
+                  View
+                </Button>
               </td>
             </tr>
           ))}
@@ -1448,91 +2220,12 @@ function ScopeValue({ label, value }: { label: string; value: string }) {
   );
 }
 
-async function loadAssignees(
-  token: string,
-  user: AuthUser,
-  branchId: string,
-): Promise<AssigneeOption[]> {
-  const self = selfAssigneeOption(user, branchId);
-
-  if (user.role === "RECEPTIONIST") return self;
-
-  const receptionistsPromise = listBranchPersonnel(token, branchId, "receptionists", {
-    limit: 100,
-    status: "ACTIVE",
-  });
-
-  if (user.role === "BRANCH_ADMIN") {
-    const receptionists = await receptionistsPromise;
-    return dedupeAssignees([
-      ...self,
-      ...receptionists.data
-        .filter(isActiveReceptionist)
-        .map((personnel) => ({
-          id: personnel.userId,
-          name: personnel.name,
-          role: "RECEPTIONIST" as const,
-        })),
-    ]);
-  }
-
-  const [admins, receptionists] = await Promise.all([
-    listBranchAdmins(token, branchId, { limit: 100, status: "ACTIVE" }),
-    receptionistsPromise,
-  ]);
-
-  return dedupeAssignees([
-    ...admins.data
-      .filter(isActiveBranchAdmin)
-      .map((admin) => ({
-        id: admin.userId,
-        name: admin.name,
-        role: "BRANCH_ADMIN" as const,
-      })),
-    ...receptionists.data
-      .filter(isActiveReceptionist)
-      .map((personnel) => ({
-        id: personnel.userId,
-        name: personnel.name,
-        role: "RECEPTIONIST" as const,
-      })),
-  ]);
-}
-
-function selfAssigneeOption(user: AuthUser, branchId: string): AssigneeOption[] {
-  if (
-    user.status !== "ACTIVE" ||
-    user.branchId !== branchId ||
-    (user.role !== "BRANCH_ADMIN" && user.role !== "RECEPTIONIST")
-  ) {
-    return [];
-  }
-
-  return [{ id: user.id, name: user.name, role: user.role }];
-}
-
-function isActiveBranchAdmin(admin: BranchAdmin) {
-  return admin.userStatus === "ACTIVE" && admin.staffStatus === "ACTIVE";
-}
-
-function isActiveReceptionist(personnel: BranchPersonnel) {
-  return personnel.userStatus === "ACTIVE" && personnel.staffStatus === "ACTIVE";
-}
-
-function dedupeAssignees(options: AssigneeOption[]) {
-  const seen = new Set<string>();
-  return options.filter((option) => {
-    if (seen.has(option.id)) return false;
-    seen.add(option.id);
-    return true;
-  });
-}
-
 function buildCreatePayload(
   form: LeadFormState,
   branchBatches: Batch[],
   activePrograms: Program[],
   activeGoals: Goal[],
+  assignees: LeadAssigneeOption[],
 ): CreateLeadRequest {
   const fullName = form.fullName.trim();
   if (fullName.length < 2) throw new Error("Enter the Lead's full name.");
@@ -1569,8 +2262,12 @@ function buildCreatePayload(
   const allowedBatchIds = new Set(branchBatches.map((batch) => batch.id));
   const allowedProgramIds = new Set(activePrograms.map((program) => program.id));
   const allowedGoalIds = new Set(activeGoals.map((goal) => goal.id));
+  const allowedAssigneeIds = new Set(assignees.map((assignee) => assignee.userId));
   const programIds = form.programIds.filter((programId) => allowedProgramIds.has(programId));
   const goalIds = form.goalIds.filter((goalId) => allowedGoalIds.has(goalId));
+  if (form.assignedUserId && !allowedAssigneeIds.has(form.assignedUserId)) {
+    throw new Error("Choose an eligible assignee from the scoped Branch list.");
+  }
 
   const payload: CreateLeadRequest = {
     currentIntent: form.currentIntent,
@@ -1599,6 +2296,95 @@ function buildCreatePayload(
   return payload;
 }
 
+function buildUpdatePayload(
+  form: LeadFormState,
+  branchBatches: Batch[],
+  activePrograms: Program[],
+  activeGoals: Goal[],
+): UpdateLeadRequest {
+  const fullName = form.fullName.trim();
+  if (fullName.length < 2) throw new Error("Enter the Lead's full name.");
+
+  const primaryPhone = normalizeIndianMobile(form.primaryPhone);
+  if (!primaryPhone) throw new Error("Enter a valid Indian primary phone number.");
+
+  const alternatePhone = form.alternatePhone.trim()
+    ? normalizeIndianMobile(form.alternatePhone)
+    : null;
+  if (form.alternatePhone.trim() && !alternatePhone) {
+    throw new Error("Enter a valid Indian alternate phone number.");
+  }
+  if (alternatePhone && alternatePhone === primaryPhone) {
+    throw new Error("Alternate phone must be different from the primary phone.");
+  }
+
+  const email = form.email.trim().toLowerCase();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Enter a valid email address.");
+  }
+
+  if (Boolean(form.preferredStartTime) !== Boolean(form.preferredEndTime)) {
+    throw new Error("Enter both preferred start and end times.");
+  }
+  if (
+    form.preferredStartTime &&
+    form.preferredEndTime &&
+    form.preferredStartTime >= form.preferredEndTime
+  ) {
+    throw new Error("Preferred end time must be after the start time.");
+  }
+
+  const allowedBatchIds = new Set(branchBatches.map((batch) => batch.id));
+  const allowedProgramIds = new Set(activePrograms.map((program) => program.id));
+  const allowedGoalIds = new Set(activeGoals.map((goal) => goal.id));
+  if (form.preferredBatchId && !allowedBatchIds.has(form.preferredBatchId)) {
+    throw new Error("Choose a preferred Batch from this Lead's Branch.");
+  }
+
+  return {
+    alternatePhone,
+    batchTypePref: form.batchTypePref || null,
+    currentIntent: form.currentIntent,
+    currentSummary: form.currentSummary.trim() || null,
+    dob: form.dob || null,
+    email: email || null,
+    fullName,
+    goalIds: form.goalIds.filter((goalId) => allowedGoalIds.has(goalId)),
+    preferredBatchId: form.preferredBatchId || null,
+    preferredChannel: form.preferredChannel || null,
+    preferredDays: form.preferredDays,
+    preferredEndTime: form.preferredEndTime || null,
+    preferredStartTime: form.preferredStartTime || null,
+    primaryPhone,
+    programIds: form.programIds.filter((programId) => allowedProgramIds.has(programId)),
+    source: form.source,
+    sourceDetails: form.sourceDetails.trim() || null,
+  };
+}
+
+function leadToForm(lead: LeadDetail): LeadFormState {
+  return {
+    alternatePhone: lead.alternatePhone ?? "",
+    assignedUserId: "",
+    batchTypePref: lead.batchTypePref ?? "",
+    currentIntent: lead.currentIntent,
+    currentSummary: lead.currentSummary ?? "",
+    dob: dateInputValue(lead.dob),
+    email: lead.email ?? "",
+    fullName: lead.fullName,
+    goalIds: lead.goals.map((goal) => goal.goalId),
+    preferredBatchId: lead.preferredBatchId ?? "",
+    preferredChannel: lead.preferredChannel ?? "",
+    preferredDays: lead.preferredDays ?? [],
+    preferredEndTime: timeInputValue(lead.preferredEndTime),
+    preferredStartTime: timeInputValue(lead.preferredStartTime),
+    primaryPhone: lead.primaryPhone ?? "",
+    programIds: lead.interests.map((interest) => interest.programId),
+    source: lead.source,
+    sourceDetails: lead.sourceDetails ?? "",
+  };
+}
+
 function normalizeIndianMobile(input: string) {
   const raw = input.trim();
   const digits = raw.replace(/\D/g, "");
@@ -1615,6 +2401,46 @@ function normalizeIndianMobile(input: string) {
 
 function labelFor<T extends string>(options: Array<{ label: string; value: T }>, value: T) {
   return options.find((option) => option.value === value)?.label ?? formatEnum(value);
+}
+
+function batchNameFor(batchId: string | null, batches: Batch[]) {
+  if (!batchId) return "Not set";
+  const batch = batches.find((item) => item.id === batchId);
+  return batch ? `${batch.name} (${timeRange(batch)})` : shortId(batchId);
+}
+
+function formatLeadPrograms(lead: LeadDetail, programs: Program[]) {
+  if (!lead.interests.length) return "Not set";
+  return lead.interests
+    .map((interest) => interest.program?.name ?? programs.find((program) => program.id === interest.programId)?.name ?? shortId(interest.programId))
+    .join(", ");
+}
+
+function formatLeadGoals(lead: LeadDetail, goals: Goal[]) {
+  if (!lead.goals.length) return "Not set";
+  return lead.goals
+    .map((goal) => goal.goal?.name ?? goals.find((item) => item.id === goal.goalId)?.name ?? shortId(goal.goalId))
+    .join(", ");
+}
+
+function formatDays(days?: number[] | null) {
+  if (!days?.length) return "Not set";
+  const labels = new Map(dayOptions.map((day) => [day.value, day.label]));
+  return days.map((day) => labels.get(day) ?? String(day)).join(", ");
+}
+
+function formatPreferredTime(start?: string | null, end?: string | null) {
+  if (!start && !end) return "Not set";
+  return `${timeInputValue(start) || "Not set"}-${timeInputValue(end) || "Not set"}`;
+}
+
+function formatSafeUser(user?: LeadDetail["assignedUser"] | null) {
+  if (!user) return "Not set";
+  return `${user.name} (${formatEnum(user.role)})`;
+}
+
+function isEmptyValue(value: React.ReactNode) {
+  return value === null || value === undefined || value === "";
 }
 
 function scopeDescription(role?: AuthUser["role"]) {
@@ -1651,6 +2477,21 @@ function formatDateTime(value?: string | null) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatDateOnly(value?: string | null) {
+  if (!value) return "Not set";
+  return new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" }).format(new Date(value));
+}
+
+function dateInputValue(value?: string | null) {
+  if (!value) return "";
+  return value.slice(0, 10);
+}
+
+function timeInputValue(value?: string | null) {
+  if (!value) return "";
+  return value.slice(0, 5);
 }
 
 function timeRange(batch: Batch) {

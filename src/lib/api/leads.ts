@@ -56,7 +56,7 @@ export type SafeBranchSummary = {
 export type SafeAssignedUserSummary = {
   id: string;
   name: string;
-  role: "BRANCH_ADMIN" | "RECEPTIONIST" | string;
+  role: "CRM_OWNER" | "ORGANIZATION_OWNER" | "BRANCH_ADMIN" | "RECEPTIONIST" | string;
   organizationId: string | null;
   branchId: string | null;
 };
@@ -97,6 +97,41 @@ export type PaginatedLeads = {
   meta: PaginationMeta;
 };
 
+export type LeadAssociationSummary = {
+  id: string;
+  name: string;
+};
+
+export type LeadProgramInterest = {
+  programId: string;
+  program: LeadAssociationSummary | null;
+};
+
+export type LeadGoalInterest = {
+  goalId: string;
+  goal: LeadAssociationSummary | null;
+};
+
+export type LeadDetail = LeadSummary & {
+  dob: string | null;
+  sourceDetails: string | null;
+  preferredDays: number[] | null;
+  preferredStartTime: string | null;
+  preferredEndTime: string | null;
+  lostReason: string | null;
+  lostExplanation: string | null;
+  archivedAt: string | null;
+  lastVisitedAt: string | null;
+  lostAt: string | null;
+  reengagedAt: string | null;
+  convertedAt: string | null;
+  createdByUser: SafeAssignedUserSummary | null;
+  updatedByUser: SafeAssignedUserSummary | null;
+  archivedByUser: SafeAssignedUserSummary | null;
+  interests: LeadProgramInterest[];
+  goals: LeadGoalInterest[];
+};
+
 export type LeadListQuery = {
   organizationId?: string;
   branchId: string;
@@ -133,6 +168,32 @@ export type CreateLeadRequest = {
   goalIds?: string[];
   assignedUserId?: string | null;
   currentSummary?: string | null;
+};
+
+export type UpdateLeadRequest = Partial<Omit<CreateLeadRequest, "assignedUserId">>;
+
+export type UpdateLeadAssignmentRequest = {
+  assignedUserId: string | null;
+};
+
+export type LeadAssigneeOption = {
+  userId: string;
+  name: string;
+  role: "BRANCH_ADMIN" | "RECEPTIONIST";
+  organizationId: string;
+  branchId: string;
+};
+
+export type LeadAssigneeQuery = {
+  page?: number;
+  limit?: number;
+  search?: string;
+  role?: LeadAssigneeOption["role"];
+};
+
+export type PaginatedLeadAssignees = {
+  data: LeadAssigneeOption[];
+  meta: PaginationMeta;
 };
 
 export type LeadPhoneConflict = {
@@ -228,7 +289,7 @@ async function request<T>(
   }
 }
 
-function queryString(query: LeadListQuery) {
+function queryString(query: Record<string, string | number | null | undefined>) {
   const params = new URLSearchParams();
   Object.entries(query).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
@@ -243,6 +304,10 @@ export function listLeads(token: string, query: LeadListQuery) {
   return request<PaginatedLeads>(token, `/leads?${suffix}`);
 }
 
+export function getLeadDetail(token: string, id: string) {
+  return request<LeadDetail>(token, `/leads/${encodeURIComponent(id)}`);
+}
+
 export function createLeadForBranch(
   token: string,
   branchId: string,
@@ -252,4 +317,38 @@ export function createLeadForBranch(
     body: JSON.stringify(payload),
     method: "POST",
   });
+}
+
+export function updateLeadProfile(
+  token: string,
+  id: string,
+  payload: UpdateLeadRequest,
+) {
+  return request<LeadDetail>(token, `/leads/${encodeURIComponent(id)}`, {
+    body: JSON.stringify(payload),
+    method: "PATCH",
+  });
+}
+
+export function updateLeadAssignment(
+  token: string,
+  id: string,
+  payload: UpdateLeadAssignmentRequest,
+) {
+  return request<LeadDetail>(token, `/leads/${encodeURIComponent(id)}/assignment`, {
+    body: JSON.stringify(payload),
+    method: "PATCH",
+  });
+}
+
+export function listLeadAssignees(
+  token: string,
+  branchId: string,
+  query: LeadAssigneeQuery = {},
+) {
+  const suffix = queryString(query);
+  return request<PaginatedLeadAssignees>(
+    token,
+    `/branches/${encodeURIComponent(branchId)}/lead-assignees${suffix ? `?${suffix}` : ""}`,
+  );
 }
