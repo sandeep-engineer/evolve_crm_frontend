@@ -1,12 +1,9 @@
 "use client";
-
-import { useState } from "react";
 import {
   Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider,
-  Drawer, IconButton, Menu, MenuItem, Stack, Typography,
+  Drawer, IconButton, Stack, Typography,
 } from "@mui/material";
-import { Archive, CalendarClock, ClipboardList, Edit3, EllipsisVertical, MessageCircle, Phone, RotateCcw, StickyNote, UserRoundX, X } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { Edit3, MessageCircle, Phone, X } from "lucide-react";
 import type { Batch } from "@/lib/api/batches";
 import type { AuthUser } from "@/lib/api/auth";
 import type { Goal } from "@/lib/api/goals";
@@ -43,11 +40,9 @@ export function LeadProfileDrawer(props: Props) {
 }
 
 function ProfileContent(props: Props) {
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   if (props.isLoading && !props.lead) return <Stack sx={{ height: "100%", alignItems: "center", justifyContent: "center" }}><CircularProgress size={28} /></Stack>;
   if (!props.lead) return <Stack spacing={2} sx={{ p: 3 }}><Stack direction="row" sx={{ justifyContent: "flex-end" }}><IconButton onClick={props.onClose}><X /></IconButton></Stack><Alert severity="error">{props.error || "Lead not found or unavailable in your scope."}</Alert></Stack>;
   const lead = props.lead;
-  const actions = actionItems(lead, props.userRole);
 
   return <Stack sx={{ height: "100%", overflow: "hidden" }}>
     <Box sx={{ px: { xs: 2, sm: 3 }, py: 2.25 }}>
@@ -61,8 +56,7 @@ function ProfileContent(props: Props) {
     <Stack direction="row" spacing={1} sx={{ px: { xs: 2, sm: 3 }, py: 1.5 }}>
       <Button fullWidth variant="outlined" color="inherit" component="a" href={phoneHref(lead.primaryPhone)} disabled={!lead.primaryPhone} startIcon={<Phone size={17} />}>Call</Button>
       <Button fullWidth variant="outlined" color="success" component="a" href={whatsappHref(lead.primaryPhone)} target="_blank" rel="noreferrer" disabled={!lead.primaryPhone} startIcon={<MessageCircle size={17} />}>WhatsApp</Button>
-      <Button fullWidth variant="contained" onClick={(event) => setAnchor(event.currentTarget)} endIcon={<EllipsisVertical size={16} />}>Task</Button>
-      <Menu anchorEl={anchor} open={Boolean(anchor)} onClose={() => setAnchor(null)}>{actions.map((item) => <MenuItem key={item.kind} onClick={() => { setAnchor(null); props.onTaskOpen(item.kind); }}><item.icon size={17} style={{ marginRight: 10 }} />{item.label}</MenuItem>)}</Menu>
+      <Button fullWidth variant="contained" onClick={() => props.onTaskOpen("followup")}>Task</Button>
     </Stack>
     <Divider />
     <Box sx={{ flex: 1, overflowY: "auto", px: { xs: 2, sm: 3 }, py: 2.5 }}>
@@ -92,14 +86,3 @@ function InfoGrid({ items }: { items: Array<[string, string | null | undefined]>
 }
 
 function preferredTime(start?: string | null, end?: string | null) { return start && end ? `${start.slice(0, 5)} – ${end.slice(0, 5)}` : ""; }
-
-type ActionItem = { icon: LucideIcon; kind: TaskKind; label: string };
-function actionItems(lead: LeadDetail, role: AuthUser["role"]): ActionItem[] {
-  if (lead.status === "ARCHIVED") return [{ icon: RotateCcw, kind: "reactivate", label: "Reactivate Lead" }];
-  const base: ActionItem[] = role === "BRANCH_ADMIN" || role === "RECEPTIONIST" ? [{ icon: CalendarClock, kind: "followup", label: "Schedule follow-up" }] : [];
-  base.push({ icon: MessageCircle, kind: "contact", label: "Record contact" }, { icon: ClipboardList, kind: "visit", label: "Record visit" }, { icon: StickyNote, kind: "note", label: "Add note" });
-  if (lead.stage === "LOST") base.push({ icon: RotateCcw, kind: "reengage", label: "Re-engage Lead" });
-  else if (lead.stage !== "CONVERTED") base.push({ icon: UserRoundX, kind: "lost", label: "Mark lost" });
-  if (lead.stage !== "CONVERTED") base.push({ icon: Archive, kind: "archive", label: "Archive Lead" });
-  return base;
-}

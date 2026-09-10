@@ -47,6 +47,12 @@ const titles: Record<TaskKind, string> = {
   reactivate: "Reactivate Lead",
 };
 const reasons: LeadLostReason[] = ["NOT_INTERESTED", "PRICE_TOO_HIGH", "LOCATION_ISSUE", "TIMING_ISSUE", "JOINED_COMPETITOR", "UNREACHABLE", "DUPLICATE", "INVALID_CONTACT", "OTHER"];
+const moveToOptions = [
+  { label: "Trial Scheduled", value: "TRIAL_SCHEDULED" },
+  { label: "Lead Follow-up", value: "LEAD_FOLLOW_UP" },
+  { label: "Lead Lost/Decline", value: "LEAD_LOST_DECLINE" },
+  { label: "Lead Unreachable", value: "LEAD_UNREACHABLE" },
+];
 
 export function TaskDialog(props: Props) {
   const kind = props.kind;
@@ -81,6 +87,7 @@ export function TaskDialog(props: Props) {
 function FollowUpTaskFields(props: Props & { update: <Key extends keyof TaskDraft>(key: Key, value: TaskDraft[Key]) => void }) {
   const [selectedPrograms, setSelectedPrograms] = useState<string[]>(() => props.lead?.interests.map((interest) => interest.programId) ?? []);
   const [batchType, setBatchType] = useState(() => props.lead?.batchTypePref ?? "GROUP_BATCH");
+  const [moveTo, setMoveTo] = useState("TRIAL_SCHEDULED");
   const [trialDate, setTrialDate] = useState("");
   const [batchId, setBatchId] = useState(() => props.lead?.preferredBatchId ?? "");
 
@@ -93,7 +100,9 @@ function FollowUpTaskFields(props: Props & { update: <Key extends keyof TaskDraf
       <Stack direction="row" spacing={{ xs: 1.25, sm: 2.5 }} sx={{ alignItems: "center" }}>
         <Box sx={{ px: 2.5, minHeight: 64, display: "grid", placeItems: "center", bgcolor: "#f0f1f3", borderRadius: 1.5 }}><Typography sx={{ fontSize: 20, fontWeight: 750 }}>{currentStage}</Typography></Box>
         <ArrowRight aria-hidden size={27} color="#777d87" />
-        <TextField select fullWidth value="TRIAL_SCHEDULED" aria-label="Move Lead to"><MenuItem value="TRIAL_SCHEDULED">Trial Scheduled</MenuItem></TextField>
+        <TextField select fullWidth value={moveTo} onChange={(event) => setMoveTo(event.target.value)} aria-label="Move Lead to">
+          {moveToOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>)}
+        </TextField>
       </Stack>
     </Labeled>
     <Labeled label="Interest (select any)">
