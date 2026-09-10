@@ -38,7 +38,7 @@ export function LeadProfileDrawer(props: Props) {
       <DialogTitle>Edit Lead</DialogTitle><DialogContent dividers><LeadForm form={props.editForm} onChange={props.onEditChange} programs={props.programs} goals={props.goals} batches={props.batches} /></DialogContent>
       <DialogActions sx={{ px: 3, py: 2 }}><Button color="inherit" onClick={props.onEditCancel} disabled={props.isSaving}>Cancel</Button><Button variant="contained" onClick={props.onEditSave} disabled={props.isSaving}>{props.isSaving ? "Saving..." : "Save changes"}</Button></DialogActions>
     </Dialog>
-    <TaskDialog kind={props.taskKind} task={props.task} error={props.taskError} isSaving={props.isSaving} onChange={props.onTaskChange} onClose={props.onTaskClose} onSubmit={props.onTaskSubmit} />
+    <TaskDialog batches={props.batches} kind={props.taskKind} lead={props.lead} programs={props.programs} task={props.task} error={props.taskError} isSaving={props.isSaving} onChange={props.onTaskChange} onClose={props.onTaskClose} onSubmit={props.onTaskSubmit} />
   </>;
 }
 
