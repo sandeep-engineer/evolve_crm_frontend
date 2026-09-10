@@ -1,14 +1,17 @@
 "use client";
 
 import type React from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  CalendarClock,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Eye,
   Filter,
+  History,
   Loader2,
   Pencil,
   Plus,
@@ -17,6 +20,7 @@ import {
   Search,
   ShieldAlert,
   SlidersHorizontal,
+  UserCheck,
   UserMinus,
   UserPlus,
 } from "lucide-react";
@@ -36,11 +40,15 @@ import { getBranches, type Branch } from "@/lib/api/branches";
 import { getGoals, type Goal } from "@/lib/api/goals";
 import {
   createLeadForBranch,
+  getLeadTimeline,
+  getLeadVisitDetail,
   getLeadDetail,
   LeadApiError,
   LeadPhoneConflictError,
+  listLeadVisits,
   listLeadAssignees,
   listLeads,
+  recordLeadVisit,
   updateLeadAssignment,
   updateLeadProfile,
   type BatchTypePref,
@@ -53,7 +61,12 @@ import {
   type LeadStage,
   type LeadStatus,
   type LeadSummary,
+  type LeadTimelineEvent,
+  type LeadTimelineEventType,
+  type LeadVisitDetail,
+  type LeadVisitSummary,
   type PaginationMeta,
+  type RecordLeadVisitRequest,
   type UpdateLeadRequest,
 } from "@/lib/api/leads";
 import { getOrganizations, type Organization } from "@/lib/api/organizations";
@@ -94,6 +107,18 @@ type FilterState = {
   status: LeadStatus | "";
 };
 
+type LeadProfileTab = "profile" | "timeline" | "visits";
+
+type VisitFormState = {
+  discussion: string;
+  programIds: string[];
+  currentIntent: LeadCurrentIntent | "";
+  preferredDays: number[];
+  preferredStartTime: string;
+  preferredEndTime: string;
+  nextActionNote: string;
+};
+
 const emptyForm: LeadFormState = {
   alternatePhone: "",
   assignedUserId: "",
@@ -125,6 +150,16 @@ const emptyFilters: FilterState = {
   source: "",
   stage: "",
   status: "",
+};
+
+const emptyVisitForm: VisitFormState = {
+  discussion: "",
+  programIds: [],
+  currentIntent: "",
+  preferredDays: [],
+  preferredStartTime: "",
+  preferredEndTime: "",
+  nextActionNote: "",
 };
 
 const leadSources: Array<{ label: string; value: LeadSource }> = [
@@ -164,6 +199,23 @@ const leadIntentOptions: Array<{ label: string; value: LeadCurrentIntent }> = [
   { label: "Needs time", value: "NEEDS_TIME" },
   { label: "Trial", value: "TRIAL" },
   { label: "Direct joining", value: "DIRECT_JOINING" },
+];
+
+const timelineEventOptions: Array<{ label: string; value: LeadTimelineEventType }> = [
+  { label: "Lead created", value: "LEAD_CREATED" },
+  { label: "Profile updated", value: "LEAD_PROFILE_UPDATED" },
+  { label: "Assignment changed", value: "LEAD_ASSIGNMENT_CHANGED" },
+  { label: "Visit recorded", value: "LEAD_VISIT_RECORDED" },
+  { label: "Follow-up scheduled", value: "FOLLOW_UP_SCHEDULED" },
+  { label: "Follow-up completed", value: "FOLLOW_UP_COMPLETED" },
+  { label: "Follow-up rescheduled", value: "FOLLOW_UP_RESCHEDULED" },
+  { label: "Follow-up cancelled", value: "FOLLOW_UP_CANCELLED" },
+  { label: "Contact recorded", value: "LEAD_CONTACT_RECORDED" },
+  { label: "Note added", value: "LEAD_NOTE_ADDED" },
+  { label: "Marked lost", value: "LEAD_MARKED_LOST" },
+  { label: "Re-engaged", value: "LEAD_REENGAGED" },
+  { label: "Archived", value: "LEAD_ARCHIVED" },
+  { label: "Reactivated", value: "LEAD_REACTIVATED" },
 ];
 
 const preferredChannels: Array<{ label: string; value: LeadCommunicationChannel }> = [
@@ -251,6 +303,62 @@ export function LeadsScreen() {
   const [debouncedProfileAssigneeSearch, setDebouncedProfileAssigneeSearch] = useState("");
   const [isProfileAssigneesLoading, setIsProfileAssigneesLoading] = useState(false);
   const [profileAssigneeError, setProfileAssigneeError] = useState("");
+  const [profileTab, setProfileTab] = useState<LeadProfileTab>("profile");
+  const [timelineEvents, setTimelineEvents] = useState<LeadTimelineEvent[]>([]);
+  const [timelineMeta, setTimelineMeta] = useState<PaginationMeta>({
+    limit: pageSize,
+    page: 1,
+    total: 0,
+    totalPages: 0,
+  });
+  const [timelinePage, setTimelinePage] = useState(1);
+  const [timelineEventType, setTimelineEventType] = useState<LeadTimelineEventType | "">("");
+  const [isTimelineLoading, setIsTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState("");
+  const [visitRows, setVisitRows] = useState<LeadVisitSummary[]>([]);
+  const [visitMeta, setVisitMeta] = useState<PaginationMeta>({
+    limit: pageSize,
+    page: 1,
+    total: 0,
+    totalPages: 0,
+  });
+  const [visitPage, setVisitPage] = useState(1);
+  const [isVisitsLoading, setIsVisitsLoading] = useState(false);
+  const [visitsError, setVisitsError] = useState("");
+  const [visitDetail, setVisitDetail] = useState<LeadVisitDetail | null>(null);
+  const [isVisitDetailOpen, setIsVisitDetailOpen] = useState(false);
+  const [isVisitDetailLoading, setIsVisitDetailLoading] = useState(false);
+  const [visitDetailError, setVisitDetailError] = useState("");
+  const [isRecordVisitOpen, setIsRecordVisitOpen] = useState(false);
+  const [visitForm, setVisitForm] = useState<VisitFormState>(emptyVisitForm);
+  const [visitFormError, setVisitFormError] = useState("");
+  const [isRecordingVisit, setIsRecordingVisit] = useState(false);
+  const activeProfileLeadIdRef = useRef("");
+
+  const resetTimelineState = useCallback(() => {
+    setTimelineEvents([]);
+    setTimelineMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+    setTimelinePage(1);
+    setTimelineEventType("");
+    setTimelineError("");
+    setIsTimelineLoading(false);
+  }, []);
+
+  const resetVisitState = useCallback(() => {
+    setVisitRows([]);
+    setVisitMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+    setVisitPage(1);
+    setVisitsError("");
+    setIsVisitsLoading(false);
+    setVisitDetail(null);
+    setIsVisitDetailOpen(false);
+    setIsVisitDetailLoading(false);
+    setVisitDetailError("");
+    setIsRecordVisitOpen(false);
+    setVisitForm(emptyVisitForm);
+    setVisitFormError("");
+    setIsRecordingVisit(false);
+  }, []);
 
   const canUseLeads = Boolean(user && user.role !== "LEAD_CALLER");
   const fixedBranchId =
@@ -284,6 +392,10 @@ export function LeadsScreen() {
     [batches, effectiveBranchId],
   );
   const canRequestLeads = Boolean(canUseLeads && effectiveBranchId && effectiveOrganizationId);
+
+  useEffect(() => {
+    activeProfileLeadIdRef.current = isProfileOpen ? selectedLeadId : "";
+  }, [isProfileOpen, selectedLeadId]);
 
   useEffect(() => {
     const accessToken = getAccessToken();
@@ -372,10 +484,13 @@ export function LeadsScreen() {
       setProfileAssigneeSearch("");
       setProfileAssigneePage(1);
       setAssignmentError("");
+      resetTimelineState();
+      resetVisitState();
+      setProfileTab("profile");
     }, 0);
 
     return () => window.clearTimeout(timeout);
-  }, [effectiveBranchId, effectiveOrganizationId]);
+  }, [effectiveBranchId, effectiveOrganizationId, resetTimelineState, resetVisitState]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -647,11 +762,13 @@ export function LeadsScreen() {
     setProfileStatus(null);
     try {
       const detail = await getLeadDetail(token, leadId);
+      if (activeProfileLeadIdRef.current !== leadId) return null;
       setSelectedLead(detail);
       setEditForm(leadToForm(detail));
       setAssignmentValue(detail.assignedUser?.id ?? "");
       return detail;
     } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return null;
       if (apiError instanceof LeadApiError) {
         setProfileStatus(apiError.status);
         if (apiError.status === 401) {
@@ -664,11 +781,14 @@ export function LeadsScreen() {
       setProfileError(apiError instanceof Error ? apiError.message : "Unable to load Lead profile.");
       return null;
     } finally {
-      setIsProfileLoading(false);
+      if (activeProfileLeadIdRef.current === leadId) {
+        setIsProfileLoading(false);
+      }
     }
   }, [router, token]);
 
   function openLeadProfile(leadId: string) {
+    activeProfileLeadIdRef.current = leadId;
     setSelectedLeadId(leadId);
     setSelectedLead(null);
     setProfileError("");
@@ -679,10 +799,14 @@ export function LeadsScreen() {
     setIsProfileOpen(true);
     setProfileAssigneePage(1);
     setProfileAssigneeSearch("");
+    setProfileTab("profile");
+    resetTimelineState();
+    resetVisitState();
     void refreshLeadProfile(leadId);
   }
 
   function closeLeadProfile() {
+    activeProfileLeadIdRef.current = "";
     setIsProfileOpen(false);
     setSelectedLeadId("");
     setSelectedLead(null);
@@ -691,6 +815,9 @@ export function LeadsScreen() {
     setProfileStatus(null);
     setAssignmentError("");
     setEditConflict(null);
+    setProfileTab("profile");
+    resetTimelineState();
+    resetVisitState();
   }
 
   useEffect(() => {
@@ -740,6 +867,116 @@ export function LeadsScreen() {
     selectedLead,
     token,
   ]);
+
+  const loadTimeline = useCallback(async (leadId: string) => {
+    if (!token) return;
+    setIsTimelineLoading(true);
+    setTimelineError("");
+    try {
+      const result = await getLeadTimeline(token, leadId, {
+        eventType: timelineEventType || undefined,
+        limit: pageSize,
+        page: timelinePage,
+      });
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setTimelineEvents(result.data);
+      setTimelineMeta(result.meta);
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setTimelineEvents([]);
+      setTimelineMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+      setTimelineError(apiError instanceof Error ? apiError.message : "Unable to load Lead timeline.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsTimelineLoading(false);
+    }
+  }, [router, timelineEventType, timelinePage, token]);
+
+  useEffect(() => {
+    if (!isProfileOpen || profileTab !== "timeline" || !selectedLeadId) return;
+    const leadId = selectedLeadId;
+    const timeout = window.setTimeout(() => {
+      void loadTimeline(leadId);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [isProfileOpen, loadTimeline, profileTab, selectedLeadId]);
+
+  const loadVisits = useCallback(async (leadId: string) => {
+    if (!token) return;
+    setIsVisitsLoading(true);
+    setVisitsError("");
+    try {
+      const result = await listLeadVisits(token, leadId, {
+        limit: pageSize,
+        page: visitPage,
+      });
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setVisitRows(result.data);
+      setVisitMeta(result.meta);
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setVisitRows([]);
+      setVisitMeta({ limit: pageSize, page: 1, total: 0, totalPages: 0 });
+      setVisitsError(apiError instanceof Error ? apiError.message : "Unable to load Lead visits.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsVisitsLoading(false);
+    }
+  }, [router, token, visitPage]);
+
+  useEffect(() => {
+    if (!isProfileOpen || profileTab !== "visits" || !selectedLeadId) return;
+    const leadId = selectedLeadId;
+    const timeout = window.setTimeout(() => {
+      void loadVisits(leadId);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [isProfileOpen, loadVisits, profileTab, selectedLeadId]);
+
+  async function openVisitDetail(visitId: string) {
+    if (!token || !selectedLeadId) return;
+    const leadId = selectedLeadId;
+    setIsVisitDetailOpen(true);
+    setIsVisitDetailLoading(true);
+    setVisitDetail(null);
+    setVisitDetailError("");
+    try {
+      const detail = await getLeadVisitDetail(token, leadId, visitId);
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setVisitDetail(detail);
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setVisitDetailError(apiError instanceof Error ? apiError.message : "Unable to load Visit detail.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsVisitDetailLoading(false);
+    }
+  }
+
+  function openRecordVisitDialog() {
+    setVisitForm(emptyVisitForm);
+    setVisitFormError("");
+    setIsRecordVisitOpen(true);
+  }
+
+  function closeRecordVisitDialog() {
+    if (isRecordingVisit) return;
+    setIsRecordVisitOpen(false);
+    setVisitForm(emptyVisitForm);
+    setVisitFormError("");
+  }
 
   async function submitProfileUpdate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -807,6 +1044,40 @@ export function LeadsScreen() {
       void refreshLeadProfile(selectedLead.id);
     } finally {
       setIsUpdatingAssignment(false);
+    }
+  }
+
+  async function submitVisit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !selectedLead || isRecordingVisit) return;
+    const leadId = selectedLead.id;
+
+    setIsRecordingVisit(true);
+    setVisitFormError("");
+    try {
+      const payload = buildVisitPayload(visitForm, activePrograms);
+      await recordLeadVisit(token, leadId, payload);
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      setNotice("Lead visit recorded.");
+      setIsRecordVisitOpen(false);
+      setVisitForm(emptyVisitForm);
+      await Promise.all([
+        refreshLeadProfile(leadId),
+        loadLeadList(),
+        loadTimeline(leadId),
+        loadVisits(leadId),
+      ]);
+      setProfileTab("visits");
+    } catch (apiError) {
+      if (activeProfileLeadIdRef.current !== leadId) return;
+      if (apiError instanceof LeadApiError && apiError.status === 401) {
+        clearSession();
+        router.replace("/");
+        return;
+      }
+      setVisitFormError(apiError instanceof Error ? apiError.message : "Unable to record Lead visit.");
+    } finally {
+      if (activeProfileLeadIdRef.current === leadId) setIsRecordingVisit(false);
     }
   }
 
@@ -1279,11 +1550,68 @@ export function LeadsScreen() {
             setFilters((current) => ({ ...current, stage: "", status: "", source: "" }));
             closeLeadProfile();
           }}
+          onOpenRecordVisit={openRecordVisitDialog}
+          onOpenVisit={openVisitDetail}
           onRetry={() => selectedLeadId && void refreshLeadProfile(selectedLeadId)}
+          onTabChange={setProfileTab}
           onSubmitAssignment={submitAssignmentChange}
           onSubmitProfile={submitProfileUpdate}
+          onTimelineEventTypeChange={(value) => {
+            setTimelineEventType(value);
+            setTimelinePage(1);
+          }}
+          onTimelinePageChange={setTimelinePage}
+          onTimelineRetry={() => selectedLeadId && void loadTimeline(selectedLeadId)}
+          onVisitPageChange={setVisitPage}
+          onVisitsRetry={() => selectedLeadId && void loadVisits(selectedLeadId)}
           profileError={profileError}
           profileStatus={profileStatus}
+          profileTab={profileTab}
+          timelineError={timelineError}
+          timelineEventType={timelineEventType}
+          timelineEvents={timelineEvents}
+          timelineMeta={timelineMeta}
+          visits={visitRows}
+          visitsError={visitsError}
+          visitsMeta={visitMeta}
+          isTimelineLoading={isTimelineLoading}
+          isVisitsLoading={isVisitsLoading}
+        />
+      </Dialog>
+
+      <Dialog
+        className="max-w-3xl"
+        isOpen={isRecordVisitOpen}
+        onClose={closeRecordVisitDialog}
+        title="Record Visit"
+      >
+        <RecordVisitForm
+          activePrograms={activePrograms}
+          currentUser={user}
+          form={visitForm}
+          formError={visitFormError}
+          isSaving={isRecordingVisit}
+          onCancel={closeRecordVisitDialog}
+          onChange={setVisitForm}
+          onErrorDismiss={() => setVisitFormError("")}
+          onSubmit={submitVisit}
+        />
+      </Dialog>
+
+      <Dialog
+        className="max-w-2xl"
+        isOpen={isVisitDetailOpen}
+        onClose={() => {
+          setIsVisitDetailOpen(false);
+          setVisitDetail(null);
+          setVisitDetailError("");
+        }}
+        title="Visit detail"
+      >
+        <VisitDetailDialog
+          error={visitDetailError}
+          isLoading={isVisitDetailLoading}
+          visit={visitDetail}
         />
       </Dialog>
     </AppShell>
@@ -1308,6 +1636,8 @@ function LeadProfileDialog({
   isLoading,
   isSavingAssignment,
   isSavingProfile,
+  isTimelineLoading,
+  isVisitsLoading,
   lead,
   onAssigneePageChange,
   onAssigneeSearchChange,
@@ -1316,11 +1646,27 @@ function LeadProfileDialog({
   onEdit,
   onFieldChange,
   onLocateConflict,
+  onOpenRecordVisit,
+  onOpenVisit,
   onRetry,
+  onTabChange,
   onSubmitAssignment,
   onSubmitProfile,
+  onTimelineEventTypeChange,
+  onTimelinePageChange,
+  onTimelineRetry,
+  onVisitPageChange,
+  onVisitsRetry,
   profileError,
   profileStatus,
+  profileTab,
+  timelineError,
+  timelineEventType,
+  timelineEvents,
+  timelineMeta,
+  visits,
+  visitsError,
+  visitsMeta,
 }: {
   activeGoals: Goal[];
   activePrograms: Program[];
@@ -1339,6 +1685,8 @@ function LeadProfileDialog({
   isLoading: boolean;
   isSavingAssignment: boolean;
   isSavingProfile: boolean;
+  isTimelineLoading: boolean;
+  isVisitsLoading: boolean;
   lead: LeadDetail | null;
   onAssigneePageChange: (page: number) => void;
   onAssigneeSearchChange: (value: string) => void;
@@ -1347,11 +1695,27 @@ function LeadProfileDialog({
   onEdit: () => void;
   onFieldChange: React.Dispatch<React.SetStateAction<LeadFormState>>;
   onLocateConflict: (conflict: LeadPhoneConflictError) => void;
+  onOpenRecordVisit: () => void;
+  onOpenVisit: (visitId: string) => void;
   onRetry: () => void;
+  onTabChange: (tab: LeadProfileTab) => void;
   onSubmitAssignment: (assignedUserId: string | null) => void;
   onSubmitProfile: (event: React.FormEvent<HTMLFormElement>) => void;
+  onTimelineEventTypeChange: (eventType: LeadTimelineEventType | "") => void;
+  onTimelinePageChange: (page: number) => void;
+  onTimelineRetry: () => void;
+  onVisitPageChange: (page: number) => void;
+  onVisitsRetry: () => void;
   profileError: string;
   profileStatus: number | null;
+  profileTab: LeadProfileTab;
+  timelineError: string;
+  timelineEventType: LeadTimelineEventType | "";
+  timelineEvents: LeadTimelineEvent[];
+  timelineMeta: PaginationMeta;
+  visits: LeadVisitSummary[];
+  visitsError: string;
+  visitsMeta: PaginationMeta;
 }) {
   if (isLoading) {
     return (
@@ -1401,6 +1765,7 @@ function LeadProfileDialog({
         ...assignees,
       ]
     : assignees;
+  const canRecordVisit = lead.stage !== "CONVERTED" && lead.status !== "ARCHIVED";
 
   return (
     <div className="space-y-[var(--space-5)]">
@@ -1422,6 +1787,16 @@ function LeadProfileDialog({
         <div className="flex flex-wrap gap-2">
           <StatusBadge status={statusTone(lead.status)}>{formatEnum(lead.status)}</StatusBadge>
           <StatusBadge status="pending">{formatEnum(lead.stage)}</StatusBadge>
+          <Button
+            className="gap-2"
+            disabled={!canRecordVisit}
+            onClick={onOpenRecordVisit}
+            title={canRecordVisit ? "Record Visit" : "Visits cannot be recorded for archived or converted Leads"}
+            variant="secondary"
+          >
+            <CalendarClock className="size-[var(--icon-sm)]" />
+            Record Visit
+          </Button>
           {!isEditing ? (
             <Button className="gap-2" onClick={onEdit} variant="secondary">
               <Pencil className="size-[var(--icon-sm)]" />
@@ -1431,121 +1806,558 @@ function LeadProfileDialog({
         </div>
       </div>
 
-      {isEditing ? (
-        <form className="space-y-[var(--space-5)]" onSubmit={onSubmitProfile}>
-          {editConflict ? (
-            <ConflictPanel conflict={editConflict} onLocate={() => onLocateConflict(editConflict)} />
-          ) : null}
-          <LeadEditableFields
-            activeGoals={activeGoals}
-            activePrograms={activePrograms}
-            branchBatches={branchBatches}
-            form={form}
-            onFieldChange={onFieldChange}
-          />
-          <div className="flex justify-end gap-3 border-t border-[var(--color-divider)] pt-[var(--space-4)]">
-            <Button disabled={isSavingProfile} onClick={onCancelEdit} type="button" variant="secondary">
-              Cancel
-            </Button>
-            <Button className="gap-2" disabled={isSavingProfile} type="submit">
-              {isSavingProfile ? (
-                <Loader2 className="size-[var(--icon-sm)] animate-spin" />
-              ) : (
-                <Save className="size-[var(--icon-sm)]" />
-              )}
-              Save profile
-            </Button>
-          </div>
-        </form>
-      ) : (
-        <LeadDetailView activeGoals={activeGoals} activePrograms={activePrograms} branchBatches={branchBatches} lead={lead} />
-      )}
+      <div className="flex flex-wrap gap-2 border-b border-[var(--color-divider)]" role="tablist" aria-label="Lead profile sections">
+        <ProfileTabButton active={profileTab === "profile"} icon={UserCheck} label="Profile" onClick={() => onTabChange("profile")} />
+        <ProfileTabButton active={profileTab === "timeline"} icon={History} label="Timeline" onClick={() => onTabChange("timeline")} />
+        <ProfileTabButton active={profileTab === "visits"} icon={CalendarClock} label="Visits" onClick={() => onTabChange("visits")} />
+      </div>
 
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <p className="text-sm font-bold text-[var(--color-text)]">Assignment</p>
-            <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
-              {currentAssignee ? `${currentAssignee.name} (${formatEnum(currentAssignee.role)})` : "Unassigned"}
-            </p>
-          </div>
-          <div className="grid w-full gap-3 lg:max-w-xl">
-            <Input
-              label="Search assignees"
-              onChange={(event) => onAssigneeSearchChange(event.target.value)}
-              placeholder="Search by name"
-              value={assigneeSearch}
-            />
-            <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
-              <span>Eligible assignee</span>
-              <select
-                className="h-[var(--control-height-lg)] rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] text-sm shadow-[var(--shadow-xs)] outline-none focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
-                disabled={isAssigneesLoading || !assignmentOptions.length}
-                onChange={(event) => onAssignmentChange(event.target.value)}
-                value={assignmentValue}
-              >
-                <option value="">Unassigned</option>
-                {assignmentOptions.map((assignee) => (
-                  <option key={assignee.userId} value={assignee.userId}>
-                    {assignee.name} ({formatEnum(assignee.role)})
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <span className="text-xs text-[var(--color-text-secondary)]">
-                {isAssigneesLoading ? "Loading assignees" : `${assigneeMeta.total} eligible options`}
-              </span>
-              <div className="flex gap-2">
-                <Button
-                  aria-label="Previous assignee page"
-                  disabled={isAssigneesLoading || assigneePage <= 1}
-                  onClick={() => onAssigneePageChange(Math.max(1, assigneePage - 1))}
-                  variant="secondary"
-                >
-                  <ChevronLeft className="size-[var(--icon-sm)]" />
+      {profileTab === "profile" ? (
+        <div className="space-y-[var(--space-5)]" role="tabpanel">
+          {isEditing ? (
+            <form className="space-y-[var(--space-5)]" onSubmit={onSubmitProfile}>
+              {editConflict ? (
+                <ConflictPanel conflict={editConflict} onLocate={() => onLocateConflict(editConflict)} />
+              ) : null}
+              <LeadEditableFields
+                activeGoals={activeGoals}
+                activePrograms={activePrograms}
+                branchBatches={branchBatches}
+                form={form}
+                onFieldChange={onFieldChange}
+              />
+              <div className="flex justify-end gap-3 border-t border-[var(--color-divider)] pt-[var(--space-4)]">
+                <Button disabled={isSavingProfile} onClick={onCancelEdit} type="button" variant="secondary">
+                  Cancel
                 </Button>
-                <Button
-                  aria-label="Next assignee page"
-                  disabled={isAssigneesLoading || assigneePage >= Math.max(1, assigneeMeta.totalPages)}
-                  onClick={() => onAssigneePageChange(Math.min(Math.max(1, assigneeMeta.totalPages), assigneePage + 1))}
-                  variant="secondary"
-                >
-                  <ChevronRight className="size-[var(--icon-sm)]" />
+                <Button className="gap-2" disabled={isSavingProfile} type="submit">
+                  {isSavingProfile ? (
+                    <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+                  ) : (
+                    <Save className="size-[var(--icon-sm)]" />
+                  )}
+                  Save profile
                 </Button>
               </div>
-            </div>
-            {assigneeError ? <p className="text-sm text-[var(--color-danger)]">{assigneeError}</p> : null}
-            {assignmentError ? <p className="text-sm text-[var(--color-danger)]">{assignmentError}</p> : null}
-            <div className="flex justify-end gap-3">
+            </form>
+          ) : (
+            <LeadDetailView activeGoals={activeGoals} activePrograms={activePrograms} branchBatches={branchBatches} lead={lead} />
+          )}
+
+          <LeadAssignmentPanel
+            assigneeError={assigneeError}
+            assigneeMeta={assigneeMeta}
+            assigneePage={assigneePage}
+            assigneeSearch={assigneeSearch}
+            assignmentError={assignmentError}
+            assignmentOptions={assignmentOptions}
+            assignmentValue={assignmentValue}
+            currentAssignee={currentAssignee}
+            isAssigneesLoading={isAssigneesLoading}
+            isSavingAssignment={isSavingAssignment}
+            onAssigneePageChange={onAssigneePageChange}
+            onAssigneeSearchChange={onAssigneeSearchChange}
+            onAssignmentChange={onAssignmentChange}
+            onSubmitAssignment={onSubmitAssignment}
+          />
+        </div>
+      ) : null}
+
+      {profileTab === "timeline" ? (
+        <LeadTimelinePanel
+          error={timelineError}
+          eventType={timelineEventType}
+          events={timelineEvents}
+          isLoading={isTimelineLoading}
+          meta={timelineMeta}
+          onEventTypeChange={onTimelineEventTypeChange}
+          onPageChange={onTimelinePageChange}
+          onRetry={onTimelineRetry}
+        />
+      ) : null}
+
+      {profileTab === "visits" ? (
+        <LeadVisitsPanel
+          error={visitsError}
+          isLoading={isVisitsLoading}
+          meta={visitsMeta}
+          onOpenVisit={onOpenVisit}
+          onPageChange={onVisitPageChange}
+          onRetry={onVisitsRetry}
+          visits={visits}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ProfileTabButton({
+  active,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      aria-selected={active}
+      className={cn(
+        "inline-flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold",
+        active
+          ? "border-[var(--color-primary)] text-[var(--color-primary)]"
+          : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text)]",
+      )}
+      onClick={onClick}
+      role="tab"
+      type="button"
+    >
+      <Icon className="size-[var(--icon-sm)]" />
+      {label}
+    </button>
+  );
+}
+
+function LeadAssignmentPanel({
+  assigneeError,
+  assigneeMeta,
+  assigneePage,
+  assigneeSearch,
+  assignmentError,
+  assignmentOptions,
+  assignmentValue,
+  currentAssignee,
+  isAssigneesLoading,
+  isSavingAssignment,
+  onAssigneePageChange,
+  onAssigneeSearchChange,
+  onAssignmentChange,
+  onSubmitAssignment,
+}: {
+  assigneeError: string;
+  assigneeMeta: PaginationMeta;
+  assigneePage: number;
+  assigneeSearch: string;
+  assignmentError: string;
+  assignmentOptions: LeadAssigneeOption[];
+  assignmentValue: string;
+  currentAssignee: LeadDetail["assignedUser"];
+  isAssigneesLoading: boolean;
+  isSavingAssignment: boolean;
+  onAssigneePageChange: (page: number) => void;
+  onAssigneeSearchChange: (value: string) => void;
+  onAssignmentChange: (value: string) => void;
+  onSubmitAssignment: (assignedUserId: string | null) => void;
+}) {
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-sm font-bold text-[var(--color-text)]">Assignment</p>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            {currentAssignee ? `${currentAssignee.name} (${formatEnum(currentAssignee.role)})` : "Unassigned"}
+          </p>
+        </div>
+        <div className="grid w-full gap-3 lg:max-w-xl">
+          <Input
+            label="Search assignees"
+            onChange={(event) => onAssigneeSearchChange(event.target.value)}
+            placeholder="Search by name"
+            value={assigneeSearch}
+          />
+          <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+            <span>Eligible assignee</span>
+            <select
+              className="h-[var(--control-height-lg)] rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] text-sm shadow-[var(--shadow-xs)] outline-none focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+              disabled={isAssigneesLoading || !assignmentOptions.length}
+              onChange={(event) => onAssignmentChange(event.target.value)}
+              value={assignmentValue}
+            >
+              <option value="">Unassigned</option>
+              {assignmentOptions.map((assignee) => (
+                <option key={assignee.userId} value={assignee.userId}>
+                  {assignee.name} ({formatEnum(assignee.role)})
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-xs text-[var(--color-text-secondary)]">
+              {isAssigneesLoading ? "Loading assignees" : `${assigneeMeta.total} eligible options`}
+            </span>
+            <div className="flex gap-2">
               <Button
-                className="gap-2"
-                disabled={isSavingAssignment || !currentAssignee}
-                onClick={() => void onSubmitAssignment(null)}
+                aria-label="Previous assignee page"
+                disabled={isAssigneesLoading || assigneePage <= 1}
+                onClick={() => onAssigneePageChange(Math.max(1, assigneePage - 1))}
                 variant="secondary"
               >
-                {isSavingAssignment ? (
-                  <Loader2 className="size-[var(--icon-sm)] animate-spin" />
-                ) : (
-                  <UserMinus className="size-[var(--icon-sm)]" />
-                )}
-                Unassign
+                <ChevronLeft className="size-[var(--icon-sm)]" />
               </Button>
               <Button
-                className="gap-2"
-                disabled={isSavingAssignment || !assignmentValue || assignmentValue === (currentAssignee?.id ?? "")}
-                onClick={() => void onSubmitAssignment(assignmentValue)}
+                aria-label="Next assignee page"
+                disabled={isAssigneesLoading || assigneePage >= Math.max(1, assigneeMeta.totalPages)}
+                onClick={() => onAssigneePageChange(Math.min(Math.max(1, assigneeMeta.totalPages), assigneePage + 1))}
+                variant="secondary"
               >
-                {isSavingAssignment ? (
-                  <Loader2 className="size-[var(--icon-sm)] animate-spin" />
-                ) : (
-                  <UserPlus className="size-[var(--icon-sm)]" />
-                )}
-                Assign
+                <ChevronRight className="size-[var(--icon-sm)]" />
               </Button>
             </div>
           </div>
+          {assigneeError ? <p className="text-sm text-[var(--color-danger)]">{assigneeError}</p> : null}
+          {assignmentError ? <p className="text-sm text-[var(--color-danger)]">{assignmentError}</p> : null}
+          <div className="flex justify-end gap-3">
+            <Button
+              className="gap-2"
+              disabled={isSavingAssignment || !currentAssignee}
+              onClick={() => void onSubmitAssignment(null)}
+              variant="secondary"
+            >
+              {isSavingAssignment ? (
+                <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+              ) : (
+                <UserMinus className="size-[var(--icon-sm)]" />
+              )}
+              Unassign
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={isSavingAssignment || !assignmentValue || assignmentValue === (currentAssignee?.id ?? "")}
+              onClick={() => void onSubmitAssignment(assignmentValue)}
+            >
+              {isSavingAssignment ? (
+                <Loader2 className="size-[var(--icon-sm)] animate-spin" />
+              ) : (
+                <UserPlus className="size-[var(--icon-sm)]" />
+              )}
+              Assign
+            </Button>
+          </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LeadTimelinePanel({
+  error,
+  eventType,
+  events,
+  isLoading,
+  meta,
+  onEventTypeChange,
+  onPageChange,
+  onRetry,
+}: {
+  error: string;
+  eventType: LeadTimelineEventType | "";
+  events: LeadTimelineEvent[];
+  isLoading: boolean;
+  meta: PaginationMeta;
+  onEventTypeChange: (eventType: LeadTimelineEventType | "") => void;
+  onPageChange: (page: number) => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="space-y-[var(--space-4)]" role="tabpanel">
+      <div className="flex flex-col gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] p-4 md:flex-row md:items-end md:justify-between">
+        <SelectField
+          label="Event type"
+          onChange={(value) => onEventTypeChange(value as LeadTimelineEventType | "")}
+          options={[{ label: "All event types", value: "" }, ...timelineEventOptions]}
+          value={eventType}
+        />
+        <Button className="gap-2" disabled={isLoading} onClick={onRetry} variant="secondary">
+          {isLoading ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : <RefreshCw className="size-[var(--icon-sm)]" />}
+          Refresh
+        </Button>
+      </div>
+      {error ? (
+        <EmptyPanel actionLabel="Retry" message={error} onAction={onRetry} tone="danger" />
+      ) : isLoading ? (
+        <LoadingPanel label="Loading Lead timeline" />
+      ) : events.length ? (
+        <div className="space-y-3">
+          {events.map((event) => (
+            <TimelineEventItem event={event} key={event.id} />
+          ))}
+        </div>
+      ) : (
+        <EmptyPanel message="No timeline events found for this Lead." />
+      )}
+      <Pagination meta={meta} onPageChange={onPageChange} />
+    </div>
+  );
+}
+
+function TimelineEventItem({ event }: { event: LeadTimelineEvent }) {
+  const details = timelineDetails(event);
+  return (
+    <article className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-bold text-[var(--color-text)]">{labelFor(timelineEventOptions, event.eventType)}</p>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{event.summary}</p>
+        </div>
+        <div className="flex items-center gap-2 text-xs font-semibold text-[var(--color-text-muted)]">
+          <Clock className="size-[var(--icon-sm)]" />
+          {formatDateTime(event.occurredAt)}
+        </div>
+      </div>
+      <p className="mt-3 text-xs font-semibold text-[var(--color-text-secondary)]">
+        Performed by {event.actorUser ? `${event.actorUser.name} (${formatEnum(event.actorUser.role)})` : "Unknown user"}
+      </p>
+      {details.length ? (
+        <dl className="mt-3 grid gap-2 md:grid-cols-2">
+          {details.map((detail) => (
+            <div className="grid gap-1" key={`${event.id}-${detail.label}`}>
+              <dt className="text-xs font-bold uppercase text-[var(--color-text-muted)]">{detail.label}</dt>
+              <dd className="break-words text-sm text-[var(--color-text)]">{detail.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+    </article>
+  );
+}
+
+function LeadVisitsPanel({
+  error,
+  isLoading,
+  meta,
+  onOpenVisit,
+  onPageChange,
+  onRetry,
+  visits,
+}: {
+  error: string;
+  isLoading: boolean;
+  meta: PaginationMeta;
+  onOpenVisit: (visitId: string) => void;
+  onPageChange: (page: number) => void;
+  onRetry: () => void;
+  visits: LeadVisitSummary[];
+}) {
+  return (
+    <div className="space-y-[var(--space-4)]" role="tabpanel">
+      <div className="flex justify-end">
+        <Button className="gap-2" disabled={isLoading} onClick={onRetry} variant="secondary">
+          {isLoading ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : <RefreshCw className="size-[var(--icon-sm)]" />}
+          Refresh
+        </Button>
+      </div>
+      {error ? (
+        <EmptyPanel actionLabel="Retry" message={error} onAction={onRetry} tone="danger" />
+      ) : isLoading ? (
+        <LoadingPanel label="Loading Lead visits" />
+      ) : visits.length ? (
+        <div className="space-y-3">
+          {visits.map((visit) => (
+            <VisitListItem key={visit.id} onOpen={() => onOpenVisit(visit.id)} visit={visit} />
+          ))}
+        </div>
+      ) : (
+        <EmptyPanel message="No Visits have been recorded for this Lead." />
+      )}
+      <Pagination meta={meta} onPageChange={onPageChange} />
+    </div>
+  );
+}
+
+function VisitListItem({ onOpen, visit }: { onOpen: () => void; visit: LeadVisitSummary }) {
+  return (
+    <article className="rounded-[var(--radius-md)] border border-[var(--color-border)] p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-sm font-bold text-[var(--color-text)]">{formatDateTime(visit.visitedAt)}</p>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            Recorded and handled by {visit.actorUser?.name ?? "Unknown user"}
+          </p>
+          <p className="mt-2 line-clamp-2 text-sm text-[var(--color-text)]">{visit.discussion}</p>
+        </div>
+        <Button className="gap-2" onClick={onOpen} variant="secondary">
+          <Eye className="size-[var(--icon-sm)]" />
+          View detail
+        </Button>
+      </div>
+      <dl className="mt-3 grid gap-2 md:grid-cols-3">
+        <VisitDetailItem label="Programs" value={formatVisitPrograms(visit.programs)} />
+        <VisitDetailItem label="Intent" value={formatEnum(visit.currentIntent)} />
+        <VisitDetailItem label="Preferred time" value={formatPreferredTime(visit.preferredStartTime, visit.preferredEndTime)} />
+      </dl>
+    </article>
+  );
+}
+
+function RecordVisitForm({
+  activePrograms,
+  currentUser,
+  form,
+  formError,
+  isSaving,
+  onCancel,
+  onChange,
+  onErrorDismiss,
+  onSubmit,
+}: {
+  activePrograms: Program[];
+  currentUser: AuthUser | null;
+  form: VisitFormState;
+  formError: string;
+  isSaving: boolean;
+  onCancel: () => void;
+  onChange: React.Dispatch<React.SetStateAction<VisitFormState>>;
+  onErrorDismiss: () => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <form className="space-y-[var(--space-5)]" onSubmit={onSubmit}>
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-muted)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+        This Visit will be recorded under the currently signed-in User: {currentUser?.name ?? "current user"}.
+      </div>
+      {formError ? (
+        <Alert tone="danger" onDismiss={onErrorDismiss}>
+          {formError}
+        </Alert>
+      ) : null}
+      <label className="grid gap-2 text-sm font-medium text-[var(--color-text)]">
+        <span>Discussion</span>
+        <textarea
+          className="min-h-36 rounded-[var(--control-radius)] border border-[var(--color-border)] bg-[var(--color-surface)] px-[var(--control-padding-x)] py-3 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[var(--color-text-disabled)] focus:border-[var(--color-focus)] focus:shadow-[var(--focus-ring)]"
+          data-dialog-initial-focus
+          maxLength={2000}
+          onChange={(event) => onChange((current) => ({ ...current, discussion: event.target.value }))}
+          required
+          value={form.discussion}
+        />
+        <span className="text-xs font-normal text-[var(--color-text-muted)]">{form.discussion.length}/2000</span>
+      </label>
+      <MultiSelect
+        label="Programs"
+        onChange={(programIds) => onChange((current) => ({ ...current, programIds }))}
+        options={activePrograms.map((program) => ({ label: program.name, value: program.id }))}
+        values={form.programIds}
+      />
+      <div className="grid gap-4 md:grid-cols-2">
+        <SelectField
+          label="Current intent"
+          onChange={(value) => onChange((current) => ({ ...current, currentIntent: value as LeadCurrentIntent | "" }))}
+          options={[{ label: "Not captured", value: "" }, ...leadIntentOptions]}
+          value={form.currentIntent}
+        />
+        <Input
+          label="Next-action note"
+          maxLength={1000}
+          onChange={(event) => onChange((current) => ({ ...current, nextActionNote: event.target.value }))}
+          value={form.nextActionNote}
+        />
+      </div>
+      <div className="grid gap-4 md:grid-cols-[1fr_12rem_12rem]">
+        <DayPicker
+          onChange={(preferredDays) => onChange((current) => ({ ...current, preferredDays }))}
+          values={form.preferredDays}
+        />
+        <Input
+          label="Start time"
+          onChange={(event) => onChange((current) => ({ ...current, preferredStartTime: event.target.value }))}
+          type="time"
+          value={form.preferredStartTime}
+        />
+        <Input
+          label="End time"
+          onChange={(event) => onChange((current) => ({ ...current, preferredEndTime: event.target.value }))}
+          type="time"
+          value={form.preferredEndTime}
+        />
+      </div>
+      <div className="flex justify-end gap-3 border-t border-[var(--color-divider)] pt-[var(--space-4)]">
+        <Button disabled={isSaving} onClick={onCancel} type="button" variant="secondary">
+          Cancel
+        </Button>
+        <Button className="gap-2" disabled={isSaving} type="submit">
+          {isSaving ? <Loader2 className="size-[var(--icon-sm)] animate-spin" /> : <CalendarClock className="size-[var(--icon-sm)]" />}
+          Record Visit
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function VisitDetailDialog({
+  error,
+  isLoading,
+  visit,
+}: {
+  error: string;
+  isLoading: boolean;
+  visit: LeadVisitDetail | null;
+}) {
+  if (isLoading) return <LoadingPanel label="Loading Visit detail" />;
+  if (error) return <EmptyPanel message={error} tone="danger" />;
+  if (!visit) return <EmptyPanel message="Visit detail is not available." />;
+  return (
+    <div className="space-y-4">
+      <DetailSection title="Visit">
+        <DetailItem label="Visit date" value={formatDateTime(visit.visitedAt)} />
+        <DetailItem label="Recorded and handled by" value={visit.actorUser?.name ?? "Unknown user"} />
+        <DetailItem label="Discussion" value={visit.discussion} />
+      </DetailSection>
+      <DetailSection title="Captured Preferences">
+        <DetailItem label="Programs" value={formatVisitPrograms(visit.programs)} />
+        <DetailItem label="Current intent" value={formatEnum(visit.currentIntent)} />
+        <DetailItem label="Preferred days" value={formatDays(visit.preferredDays)} />
+        <DetailItem label="Preferred time" value={formatPreferredTime(visit.preferredStartTime, visit.preferredEndTime)} />
+        <DetailItem label="Next-action note" value={visit.nextActionNote} />
+      </DetailSection>
+    </div>
+  );
+}
+
+function VisitDetailItem({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="grid gap-1">
+      <dt className="text-xs font-bold uppercase text-[var(--color-text-muted)]">{label}</dt>
+      <dd className="break-words text-sm text-[var(--color-text-secondary)]">{isEmptyValue(value) ? "Not set" : value}</dd>
+    </div>
+  );
+}
+
+function LoadingPanel({ label }: { label: string }) {
+  return (
+    <div className="grid min-h-56 place-items-center rounded-[var(--radius-md)] border border-[var(--color-border)] p-6">
+      <div className="flex items-center gap-3 text-sm font-semibold text-[var(--color-text-secondary)]">
+        <Loader2 className="size-[var(--icon-md)] animate-spin text-[var(--color-primary)]" />
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function EmptyPanel({
+  actionLabel,
+  message,
+  onAction,
+  tone = "neutral",
+}: {
+  actionLabel?: string;
+  message: string;
+  onAction?: () => void;
+  tone?: "danger" | "neutral";
+}) {
+  return (
+    <div className="grid min-h-56 place-items-center rounded-[var(--radius-md)] border border-[var(--color-border)] p-6 text-center">
+      <div>
+        <p className={cn("text-sm font-semibold", tone === "danger" ? "text-[var(--color-danger)]" : "text-[var(--color-text-secondary)]")}>
+          {message}
+        </p>
+        {onAction ? (
+          <Button className="mt-4" onClick={onAction} variant="secondary">
+            {actionLabel ?? "Retry"}
+          </Button>
+        ) : null}
       </div>
     </div>
   );
@@ -2363,6 +3175,42 @@ function buildUpdatePayload(
   };
 }
 
+function buildVisitPayload(
+  form: VisitFormState,
+  activePrograms: Program[],
+): RecordLeadVisitRequest {
+  const discussion = form.discussion.trim();
+  if (!discussion) throw new Error("Enter the Visit discussion.");
+  if (discussion.length > 2000) throw new Error("Discussion must be 2000 characters or fewer.");
+
+  const nextActionNote = form.nextActionNote.trim();
+  if (nextActionNote.length > 1000) throw new Error("Next-action note must be 1000 characters or fewer.");
+
+  if (Boolean(form.preferredStartTime) !== Boolean(form.preferredEndTime)) {
+    throw new Error("Enter both preferred start and end times.");
+  }
+  if (
+    form.preferredStartTime &&
+    form.preferredEndTime &&
+    form.preferredStartTime >= form.preferredEndTime
+  ) {
+    throw new Error("Preferred end time must be after the start time.");
+  }
+
+  const allowedProgramIds = new Set(activePrograms.map((program) => program.id));
+  const programIds = form.programIds.filter((programId) => allowedProgramIds.has(programId));
+
+  return {
+    currentIntent: form.currentIntent || null,
+    discussion,
+    nextActionNote: nextActionNote || null,
+    preferredDays: form.preferredDays.length ? form.preferredDays : null,
+    preferredEndTime: form.preferredEndTime || null,
+    preferredStartTime: form.preferredStartTime || null,
+    programIds,
+  };
+}
+
 function leadToForm(lead: LeadDetail): LeadFormState {
   return {
     alternatePhone: lead.alternatePhone ?? "",
@@ -2435,6 +3283,11 @@ function formatPreferredTime(start?: string | null, end?: string | null) {
   return `${timeInputValue(start) || "Not set"}-${timeInputValue(end) || "Not set"}`;
 }
 
+function formatVisitPrograms(programs: LeadVisitSummary["programs"]) {
+  if (!programs.length) return "Not set";
+  return programs.map((program) => program.programNameSnapshot ?? shortId(program.programId)).join(", ");
+}
+
 function formatSafeUser(user?: LeadDetail["assignedUser"] | null) {
   if (!user) return "Not set";
   return `${user.name} (${formatEnum(user.role)})`;
@@ -2474,15 +3327,19 @@ function avatarTone(id: string) {
 
 function formatDateTime(value?: string | null) {
   if (!value) return "Not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
   return new Intl.DateTimeFormat("en-IN", {
     dateStyle: "medium",
     timeStyle: "short",
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function formatDateOnly(value?: string | null) {
   if (!value) return "Not set";
-  return new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" }).format(new Date(value));
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
+  return new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" }).format(date);
 }
 
 function dateInputValue(value?: string | null) {
@@ -2507,4 +3364,182 @@ function dateFilterValue(value: string, edge: "start" | "end") {
 function shortId(id: string) {
   if (!id) return "";
   return id.length > 8 ? `${id.slice(0, 8)}...` : id;
+}
+
+function timelineDetails(event: LeadTimelineEvent) {
+  const metadata = objectMetadata(event.metadata);
+  if (event.eventType === "LEAD_CREATED") {
+    const profile = objectMetadata(metadata.profile);
+    const phones = objectMetadata(metadata.phones);
+    const assignment = objectMetadata(metadata.assignment);
+    return compactDetails([
+      detail("Lead", stringValue(profile.fullName)),
+      detail("Source", enumValue(profile.source)),
+      detail("Primary phone", stringValue(phones.primary)),
+      detail("Programs", snapshotNames(metadata.interests)),
+      detail("Goals", snapshotNames(metadata.goals)),
+      detail("Assigned to", userValue(assignment)),
+    ]);
+  }
+  if (event.eventType === "LEAD_PROFILE_UPDATED") {
+    const changes = objectMetadata(metadata.changes);
+    return Object.entries(changes)
+      .slice(0, 8)
+      .map(([field, change]) => {
+        const changeRecord = objectMetadata(change);
+        return detail(formatEnum(field), `${timelineValue(changeRecord.before)} -> ${timelineValue(changeRecord.after)}`);
+      });
+  }
+  if (event.eventType === "LEAD_ASSIGNMENT_CHANGED") {
+    return compactDetails([
+      detail("Previous assignee", userValue(objectMetadata(metadata.previousAssignedUser))),
+      detail("New assignee", userValue(objectMetadata(metadata.newAssignedUser))),
+    ]);
+  }
+  if (event.eventType === "LEAD_VISIT_RECORDED") {
+    const captured = objectMetadata(metadata.capturedPreferences);
+    return compactDetails([
+      detail("Visit date", dateValue(metadata.visitedAt)),
+      detail("Programs", snapshotNames(metadata.programs)),
+      detail("Captured intent", enumValue(captured.currentIntent)),
+      detail("Preferred days", Array.isArray(captured.preferredDays) ? formatDays(numberArray(captured.preferredDays)) : null),
+      detail("Preferred time", formatPreferredTime(stringValue(captured.preferredStartTime), stringValue(captured.preferredEndTime))),
+      detail("Next action", stringValue(metadata.nextActionNote)),
+    ]);
+  }
+  if (event.eventType.startsWith("FOLLOW_UP_")) {
+    const followUp = objectMetadata(
+      event.eventType === "FOLLOW_UP_RESCHEDULED"
+        ? metadata.replacementFollowUp
+        : metadata.followUp,
+    );
+    return compactDetails([
+      detail("Scheduled for", dateValue(followUp.scheduledAt)),
+      detail("Channel", enumValue(followUp.channel)),
+      detail("Status", enumValue(followUp.status)),
+      detail("Assigned to", userValue(objectMetadata(metadata.assignee))),
+      detail("Reason", stringValue(metadata.reason) ?? stringValue(followUp.reasonDetails)),
+      detail("Completed at", dateValue(followUp.completedAt)),
+      detail("Cancelled at", dateValue(followUp.cancelledAt)),
+    ]);
+  }
+  if (event.eventType === "LEAD_CONTACT_RECORDED") {
+    const contact = objectMetadata(metadata.contact);
+    return compactDetails([
+      detail("Contacted at", dateValue(contact.contactedAt)),
+      detail("Channel", enumValue(contact.channel)),
+      detail("Outcome", enumValue(contact.outcome)),
+      detail("Notes", stringValue(contact.notes)),
+    ]);
+  }
+  if (event.eventType === "LEAD_NOTE_ADDED") {
+    return compactDetails([detail("Note", stringValue(metadata.body))]);
+  }
+  if (event.eventType === "LEAD_MARKED_LOST") {
+    return compactDetails([
+      detail("Previous stage", enumValue(metadata.previousStage)),
+      detail("Previous status", enumValue(metadata.previousStatus)),
+      detail("Lost reason", enumValue(metadata.lostReason)),
+      detail("Lost explanation", stringValue(metadata.lostExplanation)),
+      detail("Cancelled follow-ups", cancelledFollowUpsValue(metadata.cancelledFollowUps)),
+    ]);
+  }
+  if (event.eventType === "LEAD_REENGAGED") {
+    return compactDetails([
+      detail("Restored stage", enumValue(metadata.restoredStage)),
+      detail("New status", enumValue(metadata.newStatus)),
+      detail("Previous lost reason", enumValue(metadata.previousLostReason)),
+      detail("Note", stringValue(metadata.note)),
+    ]);
+  }
+  if (event.eventType === "LEAD_ARCHIVED") {
+    return compactDetails([
+      detail("Previous stage", enumValue(metadata.previousStage)),
+      detail("Previous status", enumValue(metadata.previousStatus)),
+      detail("Reason", stringValue(metadata.reason)),
+      detail("Cancelled follow-ups", cancelledFollowUpsValue(metadata.cancelledFollowUps)),
+    ]);
+  }
+  if (event.eventType === "LEAD_REACTIVATED") {
+    return compactDetails([
+      detail("Restored stage", enumValue(metadata.restoredStage)),
+      detail("Restored status", enumValue(metadata.restoredStatus)),
+      detail("Reason", stringValue(metadata.reason)),
+    ]);
+  }
+  return [detail("Metadata version", String(event.metadataVersion))];
+}
+
+function detail(label: string, value: string | null) {
+  return { label, value: value || "Not set" };
+}
+
+function compactDetails(details: Array<{ label: string; value: string }>) {
+  return details.filter((item) => item.value !== "Not set");
+}
+
+function objectMetadata(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown) {
+  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+
+function enumValue(value: unknown) {
+  const text = stringValue(value);
+  return text ? formatEnum(text) : null;
+}
+
+function dateValue(value: unknown) {
+  const text = stringValue(value);
+  return text ? formatDateTime(text) : null;
+}
+
+function snapshotNames(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const names = value
+    .map((item) => {
+      const record = objectMetadata(item);
+      return stringValue(record.name) ?? stringValue(record.programNameSnapshot);
+    })
+    .filter((name): name is string => Boolean(name));
+  return names.length ? names.join(", ") : null;
+}
+
+function userValue(value: Record<string, unknown>) {
+  const name = stringValue(value.name);
+  if (!name) return null;
+  const role = enumValue(value.role);
+  return role ? `${name} (${role})` : name;
+}
+
+function timelineValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "Not set";
+  if (Array.isArray(value)) {
+    const numbers = numberArray(value);
+    if (numbers.length === value.length) return formatDays(numbers);
+    return value.map(timelineValue).join(", ");
+  }
+  const record = objectMetadata(value);
+  if (Object.keys(record).length) {
+    return userValue(record) ?? stringValue(record.name) ?? stringValue(record.id) ?? "Recorded";
+  }
+  return enumValue(value) ?? stringValue(value) ?? "Recorded";
+}
+
+function numberArray(value: unknown[]) {
+  return value
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item));
+}
+
+function cancelledFollowUpsValue(value: unknown) {
+  const record = objectMetadata(value);
+  const count = stringValue(record.count);
+  if (!count || count === "0") return null;
+  const truncated = record.truncated === true ? " or more" : "";
+  return `${count}${truncated} cancelled`;
 }

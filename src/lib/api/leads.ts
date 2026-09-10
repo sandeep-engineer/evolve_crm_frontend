@@ -47,6 +47,22 @@ export type LeadCommunicationChannel =
   | "EMAIL"
   | "IN_PERSON";
 
+export type LeadTimelineEventType =
+  | "LEAD_CREATED"
+  | "LEAD_PROFILE_UPDATED"
+  | "LEAD_ASSIGNMENT_CHANGED"
+  | "LEAD_VISIT_RECORDED"
+  | "FOLLOW_UP_SCHEDULED"
+  | "FOLLOW_UP_COMPLETED"
+  | "FOLLOW_UP_RESCHEDULED"
+  | "FOLLOW_UP_CANCELLED"
+  | "LEAD_CONTACT_RECORDED"
+  | "LEAD_NOTE_ADDED"
+  | "LEAD_MARKED_LOST"
+  | "LEAD_REENGAGED"
+  | "LEAD_ARCHIVED"
+  | "LEAD_REACTIVATED";
+
 export type SafeBranchSummary = {
   id: string;
   name: string;
@@ -193,6 +209,78 @@ export type LeadAssigneeQuery = {
 
 export type PaginatedLeadAssignees = {
   data: LeadAssigneeOption[];
+  meta: PaginationMeta;
+};
+
+export type LeadProgramSnapshot = {
+  id: string;
+  name: string | null;
+};
+
+export type LeadVisitProgramSnapshot = {
+  programId: string;
+  programNameSnapshot: string | null;
+};
+
+export type LeadVisitSummary = {
+  id: string;
+  leadId: string;
+  branchId: string;
+  visitedAt: string;
+  createdAt: string;
+  discussion: string;
+  programs: LeadVisitProgramSnapshot[];
+  currentIntent: LeadCurrentIntent | null;
+  preferredDays: number[] | null;
+  preferredStartTime: string | null;
+  preferredEndTime: string | null;
+  nextActionNote: string | null;
+  actorUser: Pick<SafeAssignedUserSummary, "id" | "name"> | null;
+};
+
+export type LeadVisitDetail = LeadVisitSummary;
+
+export type PaginatedLeadVisits = {
+  data: LeadVisitSummary[];
+  meta: PaginationMeta;
+};
+
+export type RecordLeadVisitRequest = {
+  discussion: string;
+  programIds?: string[];
+  currentIntent?: LeadCurrentIntent | null;
+  preferredDays?: number[] | null;
+  preferredStartTime?: string | null;
+  preferredEndTime?: string | null;
+  nextActionNote?: string | null;
+};
+
+export type LeadTimelineActor = SafeAssignedUserSummary;
+
+export type LeadTimelineMetadata = Record<string, unknown>;
+
+export type LeadTimelineEvent = {
+  id: string;
+  leadId: string;
+  branchId: string;
+  eventType: LeadTimelineEventType;
+  actorUserId: string;
+  actorUser: LeadTimelineActor | null;
+  occurredAt: string;
+  summary: string;
+  metadata: LeadTimelineMetadata;
+  metadataVersion: number;
+  createdAt: string;
+};
+
+export type LeadTimelineQuery = {
+  page?: number;
+  limit?: number;
+  eventType?: LeadTimelineEventType;
+};
+
+export type PaginatedLeadTimeline = {
+  data: LeadTimelineEvent[];
   meta: PaginationMeta;
 };
 
@@ -351,4 +439,50 @@ export function listLeadAssignees(
     token,
     `/branches/${encodeURIComponent(branchId)}/lead-assignees${suffix ? `?${suffix}` : ""}`,
   );
+}
+
+export function getLeadTimeline(
+  token: string,
+  leadId: string,
+  query: LeadTimelineQuery = {},
+) {
+  const suffix = queryString(query);
+  return request<PaginatedLeadTimeline>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/timeline${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+export function listLeadVisits(
+  token: string,
+  leadId: string,
+  query: { page?: number; limit?: number } = {},
+) {
+  const suffix = queryString(query);
+  return request<PaginatedLeadVisits>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/visits${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+export function getLeadVisitDetail(
+  token: string,
+  leadId: string,
+  visitId: string,
+) {
+  return request<LeadVisitDetail>(
+    token,
+    `/leads/${encodeURIComponent(leadId)}/visits/${encodeURIComponent(visitId)}`,
+  );
+}
+
+export function recordLeadVisit(
+  token: string,
+  leadId: string,
+  payload: RecordLeadVisitRequest,
+) {
+  return request<LeadVisitDetail>(token, `/leads/${encodeURIComponent(leadId)}/visits`, {
+    body: JSON.stringify(payload),
+    method: "POST",
+  });
 }
